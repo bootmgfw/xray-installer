@@ -71,11 +71,11 @@ cat << EOF > /usr/local/etc/xray/config.json
                 "security": "reality",
                 "realitySettings": {
                     "show": false,
-                    "dest": "stats.vk-portal.net:443",
+                    "dest": "sun6-21.userapi.com",
                     "xver": 0,
                     "serverNames": [
-                        "stats.vk-portal.net",
-                        "vk-portal.net"
+                        "sun6-21.userapi.com",
+                        "sun6-21.userapi.com"
                     ],
                     "privateKey": "$privatkey",
                     "minClientVer": "",
