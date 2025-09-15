@@ -71,11 +71,11 @@ cat << EOF > /usr/local/etc/xray/config.json
                 "security": "reality",
                 "realitySettings": {
                     "show": false,
-                    "dest": "github.com:443",
+                    "dest": "stats.vk-portal.net:443",
                     "xver": 0,
                     "serverNames": [
-                        "github.com",
-                        "www.github.com"
+                        "stats.vk-portal.net",
+                        "vk-portal.net"
                     ],
                     "privateKey": "$privatkey",
                     "minClientVer": "",
