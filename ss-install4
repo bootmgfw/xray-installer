@@ -1,30 +1,33 @@
 #!/bin/bash
 
-# Остановка и удаление всего связанного с Outline
-docker stop outline 2>/dev/null
-docker rm outline 2>/dev/null
-docker rmi outline/outline-ss-server 2>/dev/null
-apt remove docker.io -y --purge
-apt autoremove -y
-
 # Обновление и установка
 apt update
-apt install curl jq shadowsocks-libev simple-obfs -y
+apt install curl jq qrencode -y
 
 # Включаем BBR
-echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
-echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
-sysctl -p
+bbr=$(sysctl -a | grep net.ipv4.tcp_congestion_control)
+if [ "$bbr" != "net.ipv4.tcp_congestion_control = bbr" ]; then
+    echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+    echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+    sysctl -p
+    echo "BBR включен"
+fi
+
+# Установка Shadowsocks-libev и simple-obfs
+apt install shadowsocks-libev simple-obfs -y
+
+# Останавливаем службу
+systemctl stop shadowsocks-libev
 
 # Генерация пароля
-PASSWORD=$(openssl rand -base64 16 | tr -d '/+=' | cut -c1-16)
+password=$(openssl rand -base64 16 | tr -d '/+=' | cut -c1-16)
 
 # Создание конфига Shadowsocks
 cat << EOF > /etc/shadowsocks-libev/config.json
 {
     "server": "0.0.0.0",
     "server_port": 443,
-    "password": "$PASSWORD",
+    "password": "$password",
     "method": "aes-256-gcm",
     "plugin": "obfs-server",
     "plugin_opts": "obfs=http;obfs-host=www.kinopoisk.ru",
@@ -33,42 +36,74 @@ cat << EOF > /etc/shadowsocks-libev/config.json
 }
 EOF
 
-# Перезапуск сервиса
-systemctl restart shadowsocks-libev
-systemctl enable shadowsocks-libev
+# Создание сервисного файла
+cat << EOF > /etc/systemd/system/shadowsocks.service
+[Unit]
+Description=Shadowsocks-libev Server
+After=network.target
 
-# Получение IP
-IP=$(curl -4 -s icanhazip.com)
+[Service]
+Type=simple
+User=nobody
+Group=nogroup
+LimitNOFILE=32768
+ExecStart=/usr/bin/ss-server -c /etc/shadowsocks-libev/config.json
+Restart=on-failure
 
-# Генерация ссылки
-SS_LINK="ss://$(echo -n "aes-256-gcm:$PASSWORD@$IP:443" | base64 -w 0)"
-FULL_LINK="$SS_LINK?plugin=obfs-local%3Bobfs%3Dhttp%3Bobfs-host%3Dwww.kinopoisk.ru#Mobile-VPN"
-
-# Вывод информации
-echo "=================================================="
-echo "Shadowsocks + OBFS установлен!"
-echo ""
-echo "IP сервера: $IP"
-echo "Порт: 443"
-echo "Пароль: $PASSWORD"
-echo "Метод: aes-256-gcm"
-echo "Плагин: obfs-local"
-echo "Параметры плагина: obfs=http;obfs-host=www.kinopoisk.ru"
-echo ""
-echo "Ссылка для подключения:"
-echo "$FULL_LINK"
-echo ""
-echo "QR-код:"
-echo "$FULL_LINK" | qrencode -t ansiutf8
-echo "=================================================="
-
-# Создание скрипта для управления
-cat << 'EOF' > /usr/local/bin/vpn-status
-#!/bin/bash
-echo "Статус Shadowsocks:"
-systemctl status shadowsocks-libev --no-pager -l
+[Install]
+WantedBy=multi-user.target
 EOF
 
-chmod +x /usr/local/bin/vpn-status
+# Перезагрузка демона и запуск
+systemctl daemon-reload
+systemctl enable shadowsocks
+systemctl restart shadowsocks
 
-echo "Установка завершена! Используй 'vpn-status' для проверки работы."
+# Проверка статуса
+sleep 3
+echo "Статус Shadowsocks:"
+systemctl status shadowsocks --no-pager -l
+
+# Получение IP
+ip=$(curl -4 -s icanhazip.com)
+
+# Генерация ссылок
+echo ""
+echo "=================================================="
+echo "Ссылка для подключения (SS + OBFS):"
+echo "ss://$(echo -n "aes-256-gcm:$password@$ip:443" | base64 -w 0)#Shadowsocks-Kino"
+echo ""
+echo "Плагин: obfs-local"
+echo "Параметры плагина: obfs=http;obfs-host=www.kinopoisk.ru"
+echo "=================================================="
+
+# QR-код
+echo "QR-код:"
+echo "ss://$(echo -n "aes-256-gcm:$password@$ip:443" | base64 -w 0)#Shadowsocks-Kino" | qrencode -t ansiutf8
+
+# Скрипт для показа конфига
+cat << 'EOF' > /usr/local/bin/showconfig
+#!/bin/bash
+ip=$(curl -4 -s icanhazip.com)
+password=$(jq -r '.password' /etc/shadowsocks-libev/config.json)
+echo "Ссылка: ss://$(echo -n "aes-256-gcm:$password@$ip:443" | base64 -w 0)#Shadowsocks-Kino"
+echo "Плагин: obfs-local"
+echo "Параметры: obfs=http;obfs-host=www.kinopoisk.ru"
+EOF
+chmod +x /usr/local/bin/showconfig
+
+# Файл справки
+cat << 'EOF' > /root/help-shadowsocks
+Команды:
+- showconfig: показать конфигурацию
+- systemctl restart shadowsocks: перезапустить сервис
+- systemctl status shadowsocks: статус сервиса
+
+Клиенты:
+- Android: Shadowsocks + obfs-local плагин
+- iOS: Shadowrocket
+- Windows: Shadowsocks-windows + obfs-local
+EOF
+
+echo ""
+echo "Установка завершена! Используй команду 'showconfig' для просмотра конфигурации."
