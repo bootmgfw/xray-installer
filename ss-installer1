@@ -1,0 +1,121 @@
+#!/bin/bash
+
+# Остановка и удаление всего связанного с Outline
+docker stop outline 2>/dev/null
+docker rm outline 2>/dev/null
+docker rmi outline/outline-ss-server 2>/dev/null
+apt remove docker.io -y --purge
+apt autoremove -y
+
+# Остановка Xray если работает
+systemctl stop xray 2>/dev/null
+
+# Обновление и установка
+apt update
+apt install curl jq shadowsocks-libev simple-obfs -y
+
+# Включаем BBR
+echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+sysctl -p
+
+# Генерация пароля
+PASSWORD=$(openssl rand -base64 16 | tr -d '/+=' | cut -c1-16)
+
+# Создание конфига Shadowsocks
+cat << EOF > /etc/shadowsocks-libev/config.json
+{
+    "server": "0.0.0.0",
+    "server_port": 8443,
+    "password": "$PASSWORD",
+    "method": "aes-256-gcm",
+    "plugin": "obfs-server",
+    "plugin_opts": "obfs=http;obfs-host=www.kinopoisk.ru",
+    "timeout": 300,
+    "fast_open": true
+}
+EOF
+
+# Открываем порт в firewall
+ufw allow 8443/tcp
+
+# Перезапуск сервиса
+systemctl restart shadowsocks-libev
+systemctl enable shadowsocks-libev
+
+# Получение IP
+IP=$(curl -4 -s icanhazip.com)
+
+# Генерация правильной ссылки
+SS_LINK="ss://$(echo -n "aes-256-gcm:$PASSWORD@$IP:8443" | base64 -w 0)"
+FULL_LINK="$SS_LINK?plugin=obfs-local%3Bobfs%3Dhttp%3Bobfs-host%3Dwww.kinopoisk.ru#Mobile-VPN"
+
+# Создание YAML конфига для Clash
+cat << EOF > /root/clash-config.yaml
+proxies:
+  - name: "Mobile-VPN"
+    type: ss
+    server: "$IP"
+    port: 8443
+    cipher: aes-256-gcm
+    password: "$PASSWORD"
+    plugin: obfs
+    plugin-opts:
+      mode: http
+      host: www.kinopoisk.ru
+
+proxy-groups:
+  - name: 🚀 Proxy
+    type: select
+    proxies:
+      - Mobile-VPN
+
+rules:
+  - MATCH,🚀 Proxy
+EOF
+
+# Вывод информации
+echo "=================================================="
+echo "Shadowsocks + OBFS установлен!"
+echo ""
+echo "IP сервера: $IP"
+echo "Порт: 8443"
+echo "Пароль: $PASSWORD"
+echo "Метод: aes-256-gcm"
+echo "Плагин: obfs-local"
+echo "Параметры плагина: obfs=http;obfs-host=www.kinopoisk.ru"
+echo ""
+echo "Ссылка для подключения:"
+echo "$FULL_LINK"
+echo ""
+echo "QR-код:"
+echo "$FULL_LINK" | qrencode -t ansiutf8
+echo ""
+echo "YAML конфиг для Clash сохранен в: /root/clash-config.yaml"
+echo "=================================================="
+
+# Создание скрипта для управления
+cat << 'EOF' > /usr/local/bin/vpn-status
+#!/bin/bash
+echo "Статус Shadowsocks:"
+systemctl status shadowsocks-libev --no-pager -l
+echo ""
+echo "Проверка порта 8443:"
+netstat -tulpn | grep :8443 || echo "Порт 8443 не слушается"
+EOF
+
+chmod +x /usr/local/bin/vpn-status
+
+# Создание скрипта для показа конфига
+cat << 'EOF' > /usr/local/bin/show-config
+#!/bin/bash
+echo "Ссылка: ss://$(echo -n "aes-256-gcm:$(jq -r '.password' /etc/shadowsocks-libev/config.json)@$(curl -4 -s icanhazip.com):8443" | base64 -w 0)?plugin=obfs-local%3Bobfs%3Dhttp%3Bobfs-host%3Dwww.kinopoisk.ru#Mobile-VPN"
+echo "Пароль: $(jq -r '.password' /etc/shadowsocks-libev/config.json)"
+echo "YAML конфиг: /root/clash-config.yaml"
+EOF
+
+chmod +x /usr/local/bin/show-config
+
+echo "Установка завершена! Используй:"
+echo "vpn-status - проверка работы"
+echo "show-config - показать конфигурацию"
