@@ -76,7 +76,6 @@ cat << EOF > /usr/local/etc/xray/config.json
                     "serverNames": [
                         "m.vk.com",
                         "vk.com"
-                        "stats.vk-portal.net"
                     ],
                     "privateKey": "$privatkey",
                     "minClientVer": "",
