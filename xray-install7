@@ -1,0 +1,275 @@
+#!/bin/bash
+
+# Цвета для вывода
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+echo -e "${GREEN}Начинаем установку Xray Reality...${NC}"
+
+# Обновление и установка пакетов
+apt update
+apt upgrade -y
+apt install qrencode curl jq git build-essential -y
+
+# Включаем bbr
+echo -e "${YELLOW}Включаем BBR...${NC}"
+echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+sysctl -p
+
+# Устанавливаем Xray
+echo -e "${YELLOW}Устанавливаем Xray...${NC}"
+bash -c "$(curl -4 -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+
+# Генерируем ключи
+echo -e "${YELLOW}Генерируем ключи...${NC}"
+[ -f /usr/local/etc/xray/.keys ] && rm /usr/local/etc/xray/.keys
+touch /usr/local/etc/xray/.keys
+echo "shortsid: $(openssl rand -hex 8)" >> /usr/local/etc/xray/.keys
+echo "uuid: $(xray uuid)" >> /usr/local/etc/xray/.keys
+xray x25519 >> /usr/local/etc/xray/.keys
+
+export uuid=$(cat /usr/local/etc/xray/.keys | awk -F': ' '/uuid/ {print $2}')
+export privatkey=$(cat /usr/local/etc/xray/.keys | awk -F': ' '/PrivateKey/ {print $2}')
+export publickey=$(cat /usr/local/etc/xray/.keys | awk -F': ' '/PublicKey/ {print $2}')
+export shortsid=$(cat /usr/local/etc/xray/.keys | awk -F': ' '/shortsid/ {print $2}')
+
+# Создаем конфиг с правильным байпасом
+echo -e "${YELLOW}Создаем конфигурацию...${NC}"
+cat << EOF > /usr/local/etc/xray/config.json
+{
+    "log": {
+        "loglevel": "warning"
+    },
+    "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+            {
+                "type": "field",
+                "domain": ["geosite:category-ads-all"],
+                "outboundTag": "block"
+            },
+            {
+                "type": "field",
+                "ip": ["geoip:private"],
+                "outboundTag": "direct"
+            },
+            {
+                "type": "field",
+                "ip": ["geoip:ru"],
+                "outboundTag": "direct"
+            },
+            {
+                "type": "field",
+                "domain": [
+                    "geosite:yandex",
+                    "geosite:mailru",
+                    "geosite:vk",
+                    "geosite:ru",
+                    "geosite:category-games@ru"
+                ],
+                "outboundTag": "direct"
+            }
+        ]
+    },
+    "inbounds": [
+        {
+            "listen": "0.0.0.0",
+            "port": 443,
+            "protocol": "vless",
+            "settings": {
+                "clients": [
+                    {
+                        "email": "main",
+                        "id": "$uuid",
+                        "flow": "xtls-rprx-vision"
+                    }
+                ],
+                "decryption": "none"
+            },
+            "streamSettings": {
+                "network": "tcp",
+                "security": "reality",
+                "realitySettings": {
+                    "show": false,
+                    "dest": "www.google.com:443",
+                    "xver": 0,
+                    "serverNames": ["www.google.com", "google.com"],
+                    "privateKey": "$privatkey",
+                    "minClientVer": "",
+                    "maxClientVer": "",
+                    "maxTimeDiff": 0,
+                    "shortIds": ["$shortsid"]
+                }
+            },
+            "sniffing": {
+                "enabled": true,
+                "destOverride": ["http", "tls"]
+            }
+        }
+    ],
+    "outbounds": [
+        {
+            "protocol": "freedom",
+            "tag": "direct",
+            "settings": {
+                "domainStrategy": "UseIP"
+            }
+        },
+        {
+            "protocol": "blackhole",
+            "tag": "block"
+        }
+    ]
+}
+EOF
+
+# Создаем утилиты управления
+create_util() {
+    cat << 'EOF' > $1
+#!/bin/bash
+EOF
+    cat << EOF >> $1
+$2
+EOF
+    chmod +x $1
+}
+
+# mainuser
+create_util /usr/local/bin/mainuser '
+protocol="vless"
+port="443"
+uuid=$(cat /usr/local/etc/xray/.keys | awk -F': ' '/uuid/ {print $2}')
+pbk=$(cat /usr/local/etc/xray/.keys | awk -F': ' '/PublicKey/ {print $2}')
+sid=$(cat /usr/local/etc/xray/.keys | awk -F': ' '/shortsid/ {print $2}')
+sni="www.google.com"
+ip=$(curl -4 -s icanhazip.com)
+link="$protocol://$uuid@$ip:$port?security=reality&sni=$sni&fp=chrome&pbk=$pbk&sid=$sid&type=tcp&flow=xtls-rprx-vision#main"
+echo ""
+echo "Ссылка для подключения:"
+echo "$link"
+echo ""
+echo "QR-код:"
+echo "$link" | qrencode -t ansiutf8
+'
+
+# userlist
+create_util /usr/local/bin/userlist '
+emails=($(jq -r ".inbounds[0].settings.clients[].email" "/usr/local/etc/xray/config.json"))
+if [[ ${#emails[@]} -eq 0 ]]; then
+    echo "Список клиентов пуст"
+    exit 1
+fi
+echo "Список клиентов:"
+for i in "${!emails[@]}"; do
+    echo "$((i+1)). ${emails[$i]}"
+done
+'
+
+# newuser
+create_util /usr/local/bin/newuser '
+read -p "Введите имя пользователя: " email
+if [[ -z "$email" ]]; then
+    echo "Имя не может быть пустым!"
+    exit 1
+fi
+user_exists=$(jq --arg email "$email" ".inbounds[0].settings.clients[] | select(.email == \$email)" /usr/local/etc/xray/config.json)
+if [[ -n "$user_exists" ]]; then
+    echo "Пользователь уже существует!"
+    exit 1
+fi
+new_uuid=$(xray uuid)
+jq --arg email "$email" --arg uuid "$new_uuid" ".inbounds[0].settings.clients += [{\"email\": \$email, \"id\": \$uuid, \"flow\": \"xtls-rprx-vision\"}]" /usr/local/etc/xray/config.json > tmp.json && mv tmp.json /usr/local/etc/xray/config.json
+systemctl restart xray
+echo "Пользователь $email добавлен!"
+'
+
+# rmuser
+create_util /usr/local/bin/rmuser '
+emails=($(jq -r ".inbounds[0].settings.clients[].email" "/usr/local/etc/xray/config.json"))
+if [[ ${#emails[@]} -eq 0 ]]; then
+    echo "Нет клиентов!"
+    exit 1
+fi
+echo "Список клиентов:"
+for i in "${!emails[@]}"; do
+    echo "$((i+1)). ${emails[$i]}"
+done
+read -p "Выберите номер: " choice
+if ! [[ "$choice" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > ${#emails[@]} )); then
+    echo "Неверный выбор!"
+    exit 1
+fi
+selected_email="${emails[$((choice-1))]}"
+jq --arg email "$selected_email" "(.inbounds[0].settings.clients) |= map(select(.email != \$email))" /usr/local/etc/xray/config.json > tmp.json && mv tmp.json /usr/local/etc/xray/config.json
+systemctl restart xray
+echo "Пользователь $selected_email удален!"
+'
+
+# sharelink
+create_util /usr/local/bin/sharelink '
+emails=($(jq -r ".inbounds[0].settings.clients[].email" "/usr/local/etc/xray/config.json"))
+for i in "${!emails[@]}"; do
+   echo "$((i+1)). ${emails[$i]}"
+done
+read -p "Выберите клиента: " client
+if ! [[ "$client" =~ ^[0-9]+$ ]] || (( client < 1 || client > ${#emails[@]} )); then
+    echo "Неверный выбор!"
+    exit 1
+fi
+selected_email="${emails[$((client-1))]}"
+index=$(jq --arg email "$selected_email" ".inbounds[0].settings.clients | to_entries[] | select(.value.email == \$email) | .key" /usr/local/etc/xray/config.json)
+uuid=$(jq --argjson index "$index" -r ".inbounds[0].settings.clients[\$index].id" /usr/local/etc/xray/config.json)
+pbk=$(cat /usr/local/etc/xray/.keys | awk -F": " "/PublicKey/ {print \$2}")
+sid=$(cat /usr/local/etc/xray/.keys | awk -F": " "/shortsid/ {print \$2}")
+sni="www.google.com"
+ip=$(curl -4 -s icanhazip.com)
+link="vless://$uuid@$ip:443?security=reality&sni=$sni&fp=chrome&pbk=$pbk&sid=$sid&type=tcp&flow=xtls-rprx-vision#$selected_email"
+echo ""
+echo "Ссылка для $selected_email:"
+echo "$link"
+echo ""
+echo "QR-код:"
+echo "$link" | qrencode -t ansiutf8
+'
+
+# Перезапускаем Xray
+systemctl restart xray
+systemctl enable xray
+
+# Проверяем статус
+if systemctl is-active --quiet xray; then
+    echo -e "${GREEN}Xray успешно запущен!${NC}"
+else
+    echo -e "${RED}Ошибка запуска Xray!${NC}"
+    journalctl -u xray -n 10 --no-pager
+    exit 1
+fi
+
+# Файл помощи
+cat << 'EOF' > /root/help
+Команды управления:
+  mainuser   - ссылка основного пользователя
+  newuser    - добавить пользователя
+  rmuser     - удалить пользователя
+  userlist   - список пользователей
+  sharelink  - получить ссылку пользователя
+
+Конфиг: /usr/local/etc/xray/config.json
+Перезагрузка: systemctl restart xray
+
+=== КАК РАБОТАЕТ ===
+• Российские сайты (VK, Yandex и др.) идут напрямую
+• Весь остальной трафик маскируется под Google
+• Для провайдера трафик выглядит как обращение к google.com
+• Реальный трафик шифруется через Reality
+EOF
+
+echo -e "${GREEN}Установка завершена!${NC}"
+echo -e "${YELLOW}Используйте команду 'mainuser' для получения ссылки${NC}"
+echo -e "${GREEN}Российские сайты работают напрямую, остальное через VPN!${NC}"
+
+# Показываем ссылку основного пользователя
+/usr/local/bin/mainuser
