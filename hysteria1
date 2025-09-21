@@ -24,6 +24,7 @@ HYSTERIA_PASSWORD=$(openssl rand -hex 16)
 # Создаем конфигурационный файл
 cat > /etc/hysteria/config.yaml << EOF
 listen: :443
+protocol: tcp
 
 tls:
   cert: /etc/hysteria/server.crt
