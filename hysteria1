@@ -1,19 +1,20 @@
 #!/bin/bash
 
+# Устанавливаем зависимости
+apt update
+apt install -y curl qrencode openssl
+
 # Устанавливаем Hysteria
 bash <(curl -fsSL https://get.hy2.sh/)
 
-# Устанавливаем утилиту для генерации QR-кодов (если еще не установлена)
-apt install -y qrencode
-
-# Задаем маскировку (можно легко поменять)
+# Задаем маскировку
 MASQUERADE_HOST="rutube.ru"
 MASQUERADE_URL="https://rutube.ru/"
 
-# Создаем директорию для конфига и сертификата
+# Создаем директорию для конфига
 mkdir -p /etc/hysteria/
 
-# Генерируем собственный сертификат (самоподписанный)
+# Генерируем собственный сертификат
 openssl ecparam -genkey -name prime256v1 -out /etc/hysteria/server.key
 openssl req -new -x509 -days 36500 -key /etc/hysteria/server.key -out /etc/hysteria/server.crt -subj "/CN=${MASQUERADE_HOST}"
 
@@ -21,7 +22,7 @@ openssl req -new -x509 -days 36500 -key /etc/hysteria/server.key -out /etc/hyste
 HYSTERIA_PASSWORD=$(openssl rand -hex 16)
 
 # Создаем конфигурационный файл
-cat << EOF > /etc/hysteria/config.yaml
+cat > /etc/hysteria/config.yaml << EOF
 listen: :443
 
 tls:
@@ -38,11 +39,6 @@ masquerade:
     url: ${MASQUERADE_URL}
     rewriteHost: true
 
-acl:
-  inline:
-    - reject(all, udp/1-65535)
-    - accept(443, udp/1-65535)
-
 quic:
   initStreamReceiveWindow: 8388608
   maxStreamReceiveWindow: 8388608
@@ -54,28 +50,13 @@ bandwidth:
   down: 1 gbps
 
 ignoreClientBandwidth: false
-
 disableUDP: false
-
 udpIdleTimeout: 60s
-
-resolver:
-  type: udp
-  tcp:
-    addr: 8.8.8.8:53
-  udp:
-    addr: 8.8.8.8:53
-  tls:
-    addr: 8.8.8.8:853
-  https:
-    addr: 1.1.1.1:443
 EOF
 
-# Перезагружаем службу Hysteria для применения конфигурации
+# Перезагружаем службу
 systemctl restart hysteria-server
-
-# Включаем автозагрузку и запускаем службу
-systemctl enable --now hysteria-server
+systemctl enable hysteria-server
 
 # Получаем IP-адрес сервера
 IP=$(curl -4 -s icanhazip.com)
@@ -90,7 +71,6 @@ echo "Сервер: $IP"
 echo "Порт: 443"
 echo "Пароль: ${HYSTERIA_PASSWORD}"
 echo "SNI: ${MASQUERADE_HOST}"
-echo "Маскировка под: ${MASQUERADE_URL}"
 echo ""
 
 # Выводим ссылку
