@@ -1,0 +1,104 @@
+#!/bin/bash
+
+# Устанавливаем Hysteria
+bash <(curl -fsSL https://get.hy2.sh/)
+
+# Устанавливаем утилиту для генерации QR-кодов (если еще не установлена)
+apt install -y qrencode
+
+# Задаем маскировку (можно легко поменять)
+MASQUERADE_HOST="rutube.ru"
+MASQUERADE_URL="https://rutube.ru/"
+
+# Создаем директорию для конфига и сертификата
+mkdir -p /etc/hysteria/
+
+# Генерируем собственный сертификат (самоподписанный)
+openssl ecparam -genkey -name prime256v1 -out /etc/hysteria/server.key
+openssl req -new -x509 -days 36500 -key /etc/hysteria/server.key -out /etc/hysteria/server.crt -subj "/CN=${MASQUERADE_HOST}"
+
+# Генерируем случайный пароль
+HYSTERIA_PASSWORD=$(openssl rand -hex 16)
+
+# Создаем конфигурационный файл
+cat << EOF > /etc/hysteria/config.yaml
+listen: :443
+
+tls:
+  cert: /etc/hysteria/server.crt
+  key: /etc/hysteria/server.key
+
+auth:
+  type: password
+  password: ${HYSTERIA_PASSWORD}
+
+masquerade:
+  type: proxy
+  proxy:
+    url: ${MASQUERADE_URL}
+    rewriteHost: true
+
+acl:
+  inline:
+    - reject(all, udp/1-65535)
+    - accept(443, udp/1-65535)
+
+quic:
+  initStreamReceiveWindow: 8388608
+  maxStreamReceiveWindow: 8388608
+  initConnReceiveWindow: 16777216
+  maxConnReceiveWindow: 16777216
+
+bandwidth:
+  up: 1 gbps
+  down: 1 gbps
+
+ignoreClientBandwidth: false
+
+disableUDP: false
+
+udpIdleTimeout: 60s
+
+resolver:
+  type: udp
+  tcp:
+    addr: 8.8.8.8:53
+  udp:
+    addr: 8.8.8.8:53
+  tls:
+    addr: 8.8.8.8:853
+  https:
+    addr: 1.1.1.1:443
+EOF
+
+# Перезагружаем службу Hysteria для применения конфигурации
+systemctl restart hysteria-server
+
+# Включаем автозагрузку и запускаем службу
+systemctl enable --now hysteria-server
+
+# Получаем IP-адрес сервера
+IP=$(curl -4 -s icanhazip.com)
+
+# Формируем ссылку для подключения
+HYSTERIA_LINK="hy2://${HYSTERIA_PASSWORD}@${IP}:443/?insecure=1&sni=${MASQUERADE_HOST}#Hysteria-${MASQUERADE_HOST}"
+
+# Выводим информацию
+echo ""
+echo "=== Ваша конфигурация Hysteria 2 ==="
+echo "Сервер: $IP"
+echo "Порт: 443"
+echo "Пароль: ${HYSTERIA_PASSWORD}"
+echo "SNI: ${MASQUERADE_HOST}"
+echo "Маскировка под: ${MASQUERADE_URL}"
+echo ""
+
+# Выводим ссылку
+echo "Ссылка для подключения:"
+echo "${HYSTERIA_LINK}"
+echo ""
+
+# Генерируем и выводим QR-код
+echo "QR-код для импорта:"
+echo "${HYSTERIA_LINK}" | qrencode -t ansiutf8
+echo ""
