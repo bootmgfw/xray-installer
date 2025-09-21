@@ -71,11 +71,11 @@ cat << EOF > /usr/local/etc/xray/config.json
                 "security": "reality",
                 "realitySettings": {
                     "show": false,
-                    "dest": "m.vk.com:443",
+                    "dest": "splitter.wb.ru:443",
                     "xver": 0,
                     "serverNames": [
-                        "m.vk.com",
-                        "vk.com"
+                        "splitter.wb.ru",
+                        "wb.ru"
                     ],
                     "privateKey": "$privatkey",
                     "minClientVer": "",
