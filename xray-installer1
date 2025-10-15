@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ====== Настройки ======
-DOMAIN="vpn.calamity.one"
-SNI="ya.ru"                    # SNI для обхода whitelist
+# =================== Настройки ===================
+DOMAIN="vpn.example.com"
+SNI="ya.ru"
 XRAY_PORT=443
 XRAY_CONFIG="/usr/local/etc/xray/config.json"
 KEYS_FILE="/usr/local/etc/xray/.keys"
 SSL_DIR="/etc/ssl/xray"
 
-# ====== ВСТАВЬ ТУТ СВОЙ ORIGIN CERT И PRIVATE KEY (Cloudflare) ======
+# ====== ВСТАВЬ ТУТ СВОЙ ORIGIN CERT И PRIVATE KEY (Cloudflare или свой) ======
 CERT_CONTENT='-----BEGIN CERTIFICATE-----
 MIIEpDCCA4ygAwIBAgIUW2KMEX5vbszn9GEfMt2Uu0SjS0cwDQYJKoZIhvcNAQEL
 BQAwgYsxCzAJBgNVBAYTAlVTMRkwFwYDVQQKExBDbG91ZEZsYXJlLCBJbmMuMTQw
@@ -67,56 +67,44 @@ FZp1pHJyygPYqYdcph+bp/CVFSr1yJX7J50q3/Du0YkzwXvmk+84BmX2MUudeY5R
 CzNg9IH1dpQ5wLVvHmkY94yyMQ==
 -----END PRIVATE KEY-----'
 
-# ====== End of cert/key blocks ======
+# =================================================
 
-echo "Stopping nginx to free port 443 (if any)..."
-systemctl stop nginx 2>/dev/null || true
-
-# ====== Install dependencies ======
+echo ">>> Подготовка окружения..."
 apt update
 apt install -y curl jq qrencode socat ca-certificates openssl
 
-# ====== Install Xray if missing ======
+# ====== Установка Xray ======
 if ! command -v xray >/dev/null 2>&1; then
-  echo "Installing xray..."
+  echo ">>> Устанавливаем Xray..."
   bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" install
 fi
 
-# ====== Write cert/key files ======
+# ====== Сохраняем сертификат и ключ ======
 mkdir -p "${SSL_DIR}"
 echo "$CERT_CONTENT" > "${SSL_DIR}/fullchain.pem"
 echo "$KEY_CONTENT" > "${SSL_DIR}/privkey.pem"
-chmod 644 "${SSL_DIR}/fullchain.pem"
 chmod 600 "${SSL_DIR}/privkey.pem"
+chmod 644 "${SSL_DIR}/fullchain.pem"
 chown root:root "${SSL_DIR}/"*
 
-# ====== Generate keys and shortid ======
+# ====== Генерируем UUID и ключи X25519 ======
 mkdir -p /usr/local/etc/xray
-echo "" > "${KEYS_FILE}"
 UUID=$(xray uuid)
-echo "uuid: ${UUID}" >> "${KEYS_FILE}"
 X25519_OUTPUT=$(xray x25519)
-echo "${X25519_OUTPUT}" >> "${KEYS_FILE}"
 PUBKEY=$(echo "${X25519_OUTPUT}" | awk -F': ' '/PublicKey/ {print $2}' | tr -d '\r')
 PRIVKEY_X=$(echo "${X25519_OUTPUT}" | awk -F': ' '/PrivateKey/ {print $2}' | tr -d '\r')
 SHORTSID=$(openssl rand -hex 8)
+
+echo "uuid: ${UUID}" > "${KEYS_FILE}"
+echo "PublicKey: ${PUBKEY}" >> "${KEYS_FILE}"
+echo "PrivateKey: ${PRIVKEY_X}" >> "${KEYS_FILE}"
 echo "shortsid: ${SHORTSID}" >> "${KEYS_FILE}"
 chmod 600 "${KEYS_FILE}"
 
-# ====== Create Xray config (VLESS WS+TLS on 0.0.0.0:443) ======
+# ====== Генерация config.json ======
 cat > "${XRAY_CONFIG}" <<JSON
 {
   "log": { "loglevel": "warning" },
-  "routing": {
-    "domainStrategy": "IPIfNonMatch",
-    "rules": [
-      {
-        "type": "field",
-        "domain": ["geosite:category-ads-all"],
-        "outboundTag": "block"
-      }
-    ]
-  },
   "inbounds": [
     {
       "listen": "0.0.0.0",
@@ -136,7 +124,6 @@ cat > "${XRAY_CONFIG}" <<JSON
         "network": "ws",
         "security": "tls",
         "tlsSettings": {
-          "serverName": "${SNI}",
           "certificates": [
             {
               "certificateFile": "${SSL_DIR}/fullchain.pem",
@@ -148,187 +135,39 @@ cat > "${XRAY_CONFIG}" <<JSON
           "path": "/vless",
           "headers": { "Host": "${DOMAIN}" }
         }
-      },
-      "sniffing": { "enabled": true, "destOverride": ["http","tls"] }
+      }
     }
   ],
-  "outbounds": [
-    { "protocol": "freedom", "tag": "direct" },
-    { "protocol": "blackhole", "tag": "block" }
-  ]
+  "outbounds": [{ "protocol": "freedom" }]
 }
 JSON
 
-# Fix permissions so xray can read key
-chown -R nobody:nogroup "${SSL_DIR}"
-chmod 640 "${SSL_DIR}/"*
-
-# ====== Restart xray ======
+# ====== Настройка systemd ======
 systemctl daemon-reload || true
 systemctl enable xray --now || true
 sleep 1
 
 if ! systemctl is-active --quiet xray; then
-  echo "xray failed to start. Show last logs:"
-  journalctl -u xray -n 200 --no-pager
+  echo "Ошибка: Xray не запущен, показываю логи:"
+  journalctl -u xray -n 50 --no-pager
   exit 1
 fi
 
-# ====== Create helper scripts (like в оригинальном инсталлере) ======
-cat > /usr/local/bin/userlist <<'EOF'
-#!/bin/bash
-jq -r '.inbounds[0].settings.clients[].email' /usr/local/etc/xray/config.json 2>/dev/null || echo "No clients found"
-EOF
-chmod +x /usr/local/bin/userlist
-
-cat > /usr/local/bin/mainuser <<'EOF'
-#!/bin/bash
-protocol=$(jq -r '.inbounds[0].protocol' /usr/local/etc/xray/config.json)
-port=$(jq -r '.inbounds[0].port' /usr/local/etc/xray/config.json)
-uuid=$(jq -r '.inbounds[0].settings.clients[0].id' /usr/local/etc/xray/config.json)
-pbk=$(grep -oP '(?<=PublicKey: ).*' /usr/local/etc/xray/.keys 2>/dev/null)
-sid=$(grep -oP '(?<=shortsid: ).*' /usr/local/etc/xray/.keys 2>/dev/null)
-sni="${SNI}"
-host="${DOMAIN}"
-ip=$(curl -4 -s icanhazip.com || echo "${host}")
-link="${protocol}://${uuid}@${host}:443?type=ws&security=tls&sni=${sni}&host=${host}&path=%2Fvless&fp=chrome&pbk=${pbk}&sid=${sid}&flow=xtls-rprx-vision#${host}"
-echo ""
-echo "Connection link:"
-echo "${link}"
-echo ""
-echo "QR-code:"
-echo "${link}" | qrencode -t ansiutf8
-EOF
-chmod +x /usr/local/bin/mainuser
-
-cat > /usr/local/bin/newuser <<'EOF'
-#!/bin/bash
-read -p "Enter username (email): " email
-if [[ -z "$email" || "$email" == *" "* ]]; then
-  echo "Username cannot be empty or contain spaces."
-  exit 1
-fi
-exists=$(jq --arg em "$email" '.inbounds[0].settings.clients[]? | select(.email==$em)' /usr/local/etc/xray/config.json)
-if [[ -n "$exists" ]]; then
-  echo "User already exists."
-  exit 1
-fi
-uuid=$(xray uuid)
-tmp=$(mktemp)
-jq --arg em "$email" --arg id "$uuid" '.inbounds[0].settings.clients += [{"email": $em, "id": $id, "flow":"xtls-rprx-vision"}]' /usr/local/etc/xray/config.json > "${tmp}" && mv "${tmp}" /usr/local/etc/xray/config.json
-systemctl restart xray
-index=$(jq -r --arg em "$email" '.inbounds[0].settings.clients | to_entries[] | select(.value.email==$em) | .key' /usr/local/etc/xray/config.json)
-protocol=$(jq -r '.inbounds[0].protocol' /usr/local/etc/xray/config.json)
-port=$(jq -r '.inbounds[0].port' /usr/local/etc/xray/config.json)
-uuid=$(jq -r --argjson index "$index" '.inbounds[0].settings.clients[$index].id' /usr/local/etc/xray/config.json)
-pbk=$(grep -oP '(?<=PublicKey: ).*' /usr/local/etc/xray/.keys 2>/dev/null)
-sid=$(grep -oP '(?<=shortsid: ).*' /usr/local/etc/xray/.keys 2>/dev/null)
-host="${DOMAIN}"
-sni="${SNI}"
-link="${protocol}://${uuid}@${host}:443?type=ws&security=tls&sni=${sni}&host=${host}&path=%2Fvless&fp=chrome&pbk=${pbk}&sid=${sid}&flow=xtls-rprx-vision#${email}"
-echo ""
-echo "User created: $email"
-echo "Connection link:"
-echo "$link"
-echo ""
-echo "QR-code:"
-echo "${link}" | qrencode -t ansiutf8
-EOF
-chmod +x /usr/local/bin/newuser
-
-cat > /usr/local/bin/rmuser <<'EOF'
-#!/bin/bash
-emails=($(jq -r '.inbounds[0].settings.clients[].email' /usr/local/etc/xray/config.json))
-if [[ ${#emails[@]} -eq 0 ]]; then
-  echo "No users."
-  exit 1
-fi
-echo "Clients:"
-for i in "${!emails[@]}"; do
-  echo "$((i+1)). ${emails[$i]}"
-done
-read -p "Choose number to remove: " num
-if ! [[ "$num" =~ ^[0-9]+$ ]] || (( num < 1 || num > ${#emails[@]} )); then
-  echo "Invalid"
-  exit 1
-fi
-sel="${emails[$((num-1))]}"
-tmp=$(mktemp)
-jq --arg em "$sel" '(.inbounds[0].settings.clients) |= map(select(.email != $em))' /usr/local/etc/xray/config.json > "${tmp}" && mv "${tmp}" /usr/local/etc/xray/config.json
-systemctl restart xray
-echo "Removed $sel"
-EOF
-chmod +x /usr/local/bin/rmuser
-
-cat > /usr/local/bin/sharelink <<'EOF'
-#!/bin/bash
-emails=($(jq -r '.inbounds[0].settings.clients[].email' /usr/local/etc/xray/config.json))
-if [[ ${#emails[@]} -eq 0 ]]; then
-  echo "No users."
-  exit 1
-fi
-for i in "${!emails[@]}"; do
-  echo "$((i+1)). ${emails[$i]}"
-done
-read -p "Choose user number: " num
-if ! [[ "$num" =~ ^[0-9]+$ ]] || (( num < 1 || num > ${#emails[@]} )); then
-  echo "Invalid"
-  exit 1
-fi
-sel="${emails[$((num-1))]}"
-index=$(jq -r --arg em "$sel" '.inbounds[0].settings.clients | to_entries[] | select(.value.email==$em) | .key' /usr/local/etc/xray/config.json)
-protocol=$(jq -r '.inbounds[0].protocol' /usr/local/etc/xray/config.json)
-port=$(jq -r '.inbounds[0].port' /usr/local/etc/xray/config.json)
-uuid=$(jq -r --argjson index "$index" '.inbounds[0].settings.clients[$index].id' /usr/local/etc/xray/config.json)
-pbk=$(grep -oP '(?<=PublicKey: ).*' /usr/local/etc/xray/.keys 2>/dev/null)
-sid=$(grep -oP '(?<=shortsid: ).*' /usr/local/etc/xray/.keys 2>/dev/null)
-host="${DOMAIN}"
-sni="${SNI}"
-link="${protocol}://${uuid}@${host}:443?type=ws&security=tls&sni=${sni}&host=${host}&path=%2Fvless&fp=chrome&pbk=${pbk}&sid=${sid}&flow=xtls-rprx-vision#${sel}"
-echo ""
-echo "Connection link for ${sel}:"
-echo "$link"
-echo ""
-echo "QR-code:"
-echo "${link}" | qrencode -t ansiutf8
-EOF
-chmod +x /usr/local/bin/sharelink
-
-# ====== Create help file in home ======
-cat > /root/help <<'EOF'
-Xray user management commands (installed by installer):
-
-  mainuser   - show connection link + QR for main user (first client)
-  newuser    - create new user (email) and output link+QR
-  rmuser     - remove user by number
-  sharelink  - pick user and print link+QR
-  userlist   - show list of clients
-
-Config file: /usr/local/etc/xray/config.json
-Restart xray: systemctl restart xray
-EOF
-
-# ====== Final output ======
-PBK="${PUBKEY}"
-SID="${SHORTSID}"
-LINK="vless://${UUID}@${DOMAIN}:443?type=ws&security=tls&sni=${SNI}&host=${DOMAIN}&path=%2Fvless&fp=chrome&pbk=${PBK}&sid=${SID}&flow=xtls-rprx-vision#${DOMAIN}"
+# ====== Генерация ссылки и QR ======
+LINK="vless://${UUID}@${DOMAIN}:443?type=ws&security=tls&sni=${SNI}&host=${DOMAIN}&path=%2Fvless&fp=chrome&pbk=${PUBKEY}&sid=${SHORTSID}&flow=xtls-rprx-vision#${DOMAIN}"
 
 echo
-echo "=== INSTALL COMPLETE ==="
-echo "Domain: ${DOMAIN}"
-echo "SNI to use in client: ${SNI}"
-echo "Main client link:"
+echo "=== УСТАНОВКА ЗАВЕРШЕНА ==="
+echo "Домен: ${DOMAIN}"
+echo "SNI: ${SNI}"
+echo
+echo "Ссылка для подключения:"
 echo "${LINK}"
 echo
-echo "QR:"
+echo "QR-код:"
 echo "${LINK}" | qrencode -t ansiutf8
 echo
-echo "Useful commands:"
-echo " mainuser  - show main user's link + QR"
-echo " newuser   - add new user"
-echo " rmuser    - remove user"
-echo " sharelink - generate link for any user"
-echo " userlist  - list clients"
+echo "Полезные команды:"
+echo " journalctl -u xray -f   # просмотр логов"
+echo " systemctl restart xray  # перезапуск"
 echo
-echo "If client reports cert mismatch, either set Host=${DOMAIN} in client and enable skip-cert-verification, or use the Cloudflare Origin cert in the client's trust store."
-echo "Check logs: journalctl -u xray -f"
