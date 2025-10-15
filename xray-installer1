@@ -1,50 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# ========== Настройки ==========
 DOMAIN="vpn.calamity.one"
-XRAY_PORT=8443
+SNI="ya.ru"               # SNI который будет посылаться клиентом (для обхода whitelist)
+XRAY_PORT=443
+
 SSL_DIR="/etc/ssl/xray"
 XRAY_CONFIG="/usr/local/etc/xray/config.json"
-NGINX_CONF="/etc/nginx/sites-available/${DOMAIN}.conf"
 KEYS_FILE="/usr/local/etc/xray/.keys"
 
-echo "=== Installer start for ${DOMAIN} ==="
-
-if [ "$(id -u)" -ne 0 ]; then
-  echo "Run as root!"
-  exit 1
-fi
-
-# 1) install deps
-apt update
-apt install -y curl wget nginx qrencode jq socat ca-certificates lsof openssl cron apt-transport-https
-
-# 2) enable bbr if not
-if ! sysctl net.ipv4.tcp_congestion_control | grep -q bbr; then
-  echo "Enabling BBR..."
-  echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
-  echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
-  sysctl -p
-fi
-
-# 3) install xray if missing
-if ! command -v xray >/dev/null 2>&1; then
-  echo "Installing xray..."
-  bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" install
-fi
-
-# 4) create dirs
-mkdir -p "${SSL_DIR}"
-mkdir -p /usr/local/etc/xray
-chmod 700 /usr/local/etc/xray
-touch "${KEYS_FILE}"
-chmod 600 "${KEYS_FILE}"
-
-# 5) write provided Origin Certificate and Private Key into files
-echo "Writing Origin certificate and private key..."
-
-cat > "${SSL_DIR}/fullchain.pem" <<'CERT_EOF'
------BEGIN CERTIFICATE-----
+# === Вставь сюда свой Origin Certificate и Private Key (из Cloudflare) ===
+CERT_CONTENT='-----BEGIN CERTIFICATE-----
 MIIEpDCCA4ygAwIBAgIUW2KMEX5vbszn9GEfMt2Uu0SjS0cwDQYJKoZIhvcNAQEL
 BQAwgYsxCzAJBgNVBAYTAlVTMRkwFwYDVQQKExBDbG91ZEZsYXJlLCBJbmMuMTQw
 MgYDVQQLEytDbG91ZEZsYXJlIE9yaWdpbiBTU0wgQ2VydGlmaWNhdGUgQXV0aG9y
@@ -70,11 +37,9 @@ aOfGlvaD4r7yfsYGtMkvpOHWflAL2juDwUdzlmYq6Gl/1/xFYyjGPAhdHKWbGCqb
 ud/hVDQ6ch8jaWZt7fcIuPUOplXChZbgUgjOoDRhN/0LG3JlvcPygOFY51Kn1fux
 6o65joD9JKxboYrWL0L2rZKH1BOdvke9wXcGA3dEHzRZr9U+IZcig7kI1IW8bz1+
 zr3Ckq62fyPCORUGaUVON9i1OnVKjY+Z5HbcxNCG0+Mt5E7W/jrxqw==
------END CERTIFICATE-----
-CERT_EOF
+-----END CERTIFICATE-----'
 
-cat > "${SSL_DIR}/privkey.pem" <<'KEY_EOF'
------BEGIN PRIVATE KEY-----
+KEY_CONTENT='-----BEGIN PRIVATE KEY-----
 MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQDFv4BibdxMXVJ7
 1GCCXjOt1sEvhvFVkug7AiN/Vx/+xoHQDNwuAmpYGx5lTBABTQsddeTPpmKecgkn
 H+HW4RmnqhDB2gQJnBDb1YqdrZLcCvhzB5tD20GVj/Y4oyyWXTssc/Hc3QLWKNLd
@@ -101,63 +66,52 @@ ot3PujZc201F0NDoprpp+a/OTVyoHACMzH5p3OJ3UQKBgQC/UWHt83yXduwxjh+i
 y7wzoCSqLmjN+F149oMjoLLO9DUwxDygNX3qlSxfFc/jLzmmyKHPyGOIr/G2FizJ
 FZp1pHJyygPYqYdcph+bp/CVFSr1yJX7J50q3/Du0YkzwXvmk+84BmX2MUudeY5R
 CzNg9IH1dpQ5wLVvHmkY94yyMQ==
------END PRIVATE KEY-----
-KEY_EOF
+-----END PRIVATE KEY-----'
 
-chmod 600 "${SSL_DIR}/"*.pem
-echo "wrote ${SSL_DIR}/fullchain.pem and privkey.pem"
+# ========== End of user cert/key blocks ==========
 
-# 6) configure nginx site
-cat > "${NGINX_CONF}" <<NGCONF
-server {
-    listen 443 ssl http2;
-    server_name ${DOMAIN};
+echo "Stopping nginx (if running) to free port 443..."
+systemctl stop nginx 2>/dev/null || true
 
-    ssl_certificate ${SSL_DIR}/fullchain.pem;
-    ssl_certificate_key ${SSL_DIR}/privkey.pem;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_prefer_server_ciphers on;
+# install base packages
+apt update
+apt install -y curl jq qrencode ca-certificates openssl
 
-    location /vless {
-        proxy_redirect off;
-        proxy_pass http://127.0.0.1:${XRAY_PORT};
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-    }
+# install xray if missing
+if ! command -v xray >/dev/null 2>&1; then
+  echo "Installing Xray..."
+  bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" install
+fi
 
-    location / {
-        return 200 "OK\n";
-    }
-}
-NGCONF
+# create ssl dir and write cert/key
+mkdir -p "${SSL_DIR}"
+echo "$CERT_CONTENT" > "${SSL_DIR}/fullchain.pem"
+echo "$KEY_CONTENT" > "${SSL_DIR}/privkey.pem"
+chmod 644 "${SSL_DIR}/fullchain.pem"
+chmod 600 "${SSL_DIR}/privkey.pem"
+chown root:root "${SSL_DIR}/"*
 
-ln -sf "${NGINX_CONF}" /etc/nginx/sites-enabled/${DOMAIN}.conf
-nginx -t
-systemctl restart nginx
+# create xray keys file
+mkdir -p /usr/local/etc/xray
+echo "Generated keys:" > "${KEYS_FILE}"
 
-# 7) generate keys and write to KEYS_FILE
+# generate UUID and x25519
 UUID=$(xray uuid)
-echo "uuid: ${UUID}" > "${KEYS_FILE}"
-echo "" >> "${KEYS_FILE}"
+echo "uuid: ${UUID}" >> "${KEYS_FILE}"
 X25519_OUT=$(xray x25519)
 echo "${X25519_OUT}" >> "${KEYS_FILE}"
-PRIVATE_KEY_X25519=$(echo "${X25519_OUT}" | awk -F': ' '/PrivateKey/ {print $2}' | tr -d '\r')
-PUBLIC_KEY_X25519=$(echo "${X25519_OUT}" | awk -F': ' '/PublicKey/ {print $2}' | tr -d '\r')
+PUBKEY=$(echo "${X25519_OUT}" | awk -F': ' '/PublicKey/ {print $2}' | tr -d '\r')
 SHORTID=$(openssl rand -hex 8)
 echo "shortsid: ${SHORTID}" >> "${KEYS_FILE}"
 chmod 600 "${KEYS_FILE}"
 
-# 8) create xray config (VLESS + WS + TLS listening on 127.0.0.1:${XRAY_PORT})
-cat > "${XRAY_CONFIG}" <<XRCONF
+# write xray config - VLESS WS+TLS listening on 0.0.0.0:443
+cat > "${XRAY_CONFIG}" <<JSON
 {
   "log": { "loglevel": "warning" },
   "inbounds": [
     {
-      "listen": "127.0.0.1",
+      "listen": "0.0.0.0",
       "port": ${XRAY_PORT},
       "protocol": "vless",
       "settings": {
@@ -174,6 +128,7 @@ cat > "${XRAY_CONFIG}" <<XRCONF
         "network": "ws",
         "security": "tls",
         "tlsSettings": {
+          "serverName": "${SNI}",
           "certificates": [
             {
               "certificateFile": "${SSL_DIR}/fullchain.pem",
@@ -183,53 +138,50 @@ cat > "${XRAY_CONFIG}" <<XRCONF
         },
         "wsSettings": {
           "path": "/vless",
-          "headers": {
-            "Host": "${DOMAIN}"
-          }
+          "maxEarlyData": 0
         }
       },
-      "sniffing": {
-        "enabled": true,
-        "destOverride": [ "http", "tls" ]
-      }
+      "sniffing": { "enabled": true, "destOverride": [ "http", "tls" ] }
     }
   ],
-  "outbounds": [ { "protocol": "freedom" } ]
+  "outbounds": [
+    { "protocol": "freedom" }
+  ],
+  "transport": {}
 }
-XRCONF
+JSON
 
-# 9) restart xray
-systemctl restart xray || true
+# restart xray
+systemctl daemon-reload || true
+systemctl enable xray --now || true
 sleep 1
-systemctl status xray --no-pager || true
 
-# 10) produce client link (VLESS WS+TLS)
-# we will output a WS+TLS link (not Reality) that goes through Cloudflare. If you want Reality, tell me and I will change.
-PBK="${PUBLIC_KEY_X25519}"
-SID="${SHORTID}"
-LINK="vless://${UUID}@${DOMAIN}:443?type=ws&security=tls&host=${DOMAIN}&path=%2Fvless&fp=chrome&pbk=${PBK}&sid=${SID}&flow=xtls-rprx-vision#${DOMAIN}"
+# check status
+if systemctl is-active --quiet xray; then
+  echo "xray is running"
+else
+  echo "xray failed to start; check logs with: journalctl -u xray -n 200 --no-pager"
+  exit 1
+fi
+
+# produce client link (VLESS WS+TLS) WITH explicit sni
+VLESS_LINK="vless://${UUID}@${DOMAIN}:443?type=ws&security=tls&host=${DOMAIN}&sni=${SNI}&path=%2Fvless&fp=chrome&flow=xtls-rprx-vision#${DOMAIN}"
 
 echo
-echo "=== DONE ==="
-echo "Client link (VLESS WS+TLS):"
-echo "${LINK}"
+echo "=== READY ==="
+echo "Domain: ${DOMAIN}"
+echo "SNI (that client should send): ${SNI}"
 echo
-echo "QR-code:"
-echo "${LINK}" | qrencode -t ansiutf8
+echo "Client link (paste into client):"
+echo "${VLESS_LINK}"
 echo
-echo "Files written:"
-echo " - ${SSL_DIR}/fullchain.pem"
-echo " - ${SSL_DIR}/privkey.pem"
-echo " - ${XRAY_CONFIG}"
-echo " - ${NGINX_CONF}"
-echo " - ${KEYS_FILE}"
+echo "QR-code (terminal):"
+echo "${VLESS_LINK}" | qrencode -t ansiutf8
 echo
-echo "Check logs if connection fails:"
-echo " journalctl -u nginx -f"
+echo "If client reports certificate/name mismatch, in client set Host=vpn.calamity.one and enable 'skip cert verification' or set 'insecure' temporarily."
+echo
+echo "To debug:"
 echo " journalctl -u xray -f"
-
-echo "IMPORTANT:"
-echo "- Ensure in Cloudflare DNS the A record vpn.calamity.one points to your VPS and Proxy status is ORANGE (Proxied)."
-echo "- If you later want Reality (realitySettings) instead of WS, tell me and I will provide a small patch to switch inbound to reality type."
-
-exit 0
+echo " ss -tulpen | grep :443"
+echo
+echo "Done."
