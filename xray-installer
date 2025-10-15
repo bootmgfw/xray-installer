@@ -61,11 +61,11 @@ cat << EOF > /usr/local/etc/xray/config.json
                 "security": "reality",
                 "realitySettings": {
                     "show": false,
-                    "dest": "splitter.wb.ru:443",
+                    "dest": "yota.ru:443",
                     "xver": 0,
                     "serverNames": [
-                        "splitter.wb.ru",
-                        "wb.ru"
+                        "yota.ru",
+                        "web.yota.ru"
                     ],
                     "privateKey": "$privatkey",
                     "minClientVer": "",
