@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+set -euo pipefail
+DOMAIN="vpn.calamity.one"
+XRAY_LISTEN_PORT=8443
+NGINX_CONF="/etc/nginx/sites-available/${DOMAIN}.conf"
+SSL_DIR="/etc/ssl/xray"
+XRAY_CONFIG="/usr/local/etc/xray/config.json"
+KEYS_FILE="/usr/local/etc/xray/.keys"
+
+echo "=== Начинаю установку для ${DOMAIN} ==="
+
+# 1) Установить пакеты
+apt update
+apt install -y curl wget nginx qrencode jq socat ca-certificates lsof openssl cron
+
+# 2) Включить BBR (если не включён)
+if ! sysctl net.ipv4.tcp_congestion_control | grep -q bbr; then
+  echo "Включаем BBR..."
+  echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+  echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+  sysctl -p
+fi
+
+# 3) Установить Xray (официальный install script)
+if ! command -v xray >/dev/null 2>&1; then
+  echo "Установка xray..."
+  bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" install
+fi
+
+# 4) Подготовка директорий и прав
+mkdir -p "${SSL_DIR}"
+mkdir -p /usr/local/etc/xray
+touch "${KEYS_FILE}"
+chmod 600 "${KEYS_FILE}"
+
+# 5) Получение/установка сертификата через acme.sh (standalone). 
+#    Если есть CF_API_TOKEN в окружении — попытаемся DNS-01 через Cloudflare.
+export ACME_SH_HOME="${HOME}/.acme.sh"
+
+if [ -n "${CF_API_TOKEN:-}" ]; then
+  echo "CF_API_TOKEN найден — пытаемся выпустить сертификат через DNS-01 (Cloudflare API)..."
+  curl https://get.acme.sh | sh
+  source "${HOME}/.acme.sh"/acme.sh.env || true
+  ~/.acme.sh/acme.sh --issue --dns dns_cf -d "${DOMAIN}" --yes-I-know-dns-manual-mode  || true
+  if [ -f "${HOME}/.acme.sh/${DOMAIN}/${DOMAIN}.cer" ]; then
+    ~/.acme.sh/acme.sh --install-cert -d "${DOMAIN}" \
+      --key-file "${SSL_DIR}/privkey.pem" \
+      --fullchain-file "${SSL_DIR}/fullchain.pem" \
+      --reloadcmd "systemctl restart nginx || true"
+    echo "Сертификат получен через Cloudflare DNS-01"
+    CERT_OK=1
+  else
+    CERT_OK=0
+    echo "Не удалось получить сертификат через DNS-01"
+  fi
+else
+  echo "CF_API_TOKEN не задан — попробуем HTTP-01 (standalone)."
+  curl https://get.acme.sh | sh
+  source "${HOME}/.acme.sh"/acme.sh.env || true
+
+  # Остановим nginx временно чтобы acme.sh standalone мог занять 80
+  if systemctl is-active --quiet nginx; then
+    systemctl stop nginx || true
+    stopped_nginx=1
+  else
+    stopped_nginx=0
+  fi
+
+  if ~/.acme.sh/acme.sh --issue -d "${DOMAIN}" --standalone --keylength ec-256; then
+    ~/.acme.sh/acme.sh --install-cert -d "${DOMAIN}" \
+      --key-file "${SSL_DIR}/privkey.pem" \
+      --fullchain-file "${SSL_DIR}/fullchain.pem" \
+      --reloadcmd "systemctl restart nginx || true"
+    CERT_OK=1
+    echo "Сертификат Let's Encrypt получен успешно."
+  else
+    CERT_OK=0
+    echo "Не удалось получить сертификат через HTTP-01 (standalone)."
+  fi
+
+  # Запускаем nginx обратно, если останавливали
+  if [ "${stopped_nginx}" = 1 ]; then
+    systemctl start nginx || true
+  fi
+fi
+
+# Если сертификат не получен — попробуем вариант с Cloudflare Origin Certificate через API (если CF_API_TOKEN задан)
+if [ "${CERT_OK:-0}" -ne 1 ] && [ -n "${CF_API_TOKEN:-}" ]; then
+  echo "Попытка создать Cloudflare Origin Certificate через API..."
+  # Генерируем CSR/key на сервере и отправим запрос к Cloudflare API
+  CSR_KEY="${SSL_DIR}/origin_privkey.pem"
+  CSR_FILE="${SSL_DIR}/origin.csr"
+  ORIGIN_CERT="${SSL_DIR}/origin_crt.pem"
+
+  openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "${CSR_KEY}"
+  openssl req -new -key "${CSR_KEY}" -subj "/CN=${DOMAIN}" -out "${CSR_FILE}"
+
+  # Create origin cert via Cloudflare API
+  CF_API="${CF_API_TOKEN}"
+  CF_EMAIL="${CF_EMAIL:-}"
+  # Получаем zone id
+  ZONE_NAME="calamity.one"
+  echo "Получаем zone id для ${ZONE_NAME}"
+  ZONE_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones?name=${ZONE_NAME}" \
+    -H "Authorization: Bearer ${CF_API}" -H "Content-Type: application/json" | jq -r '.result[0].id')
+
+  if [ -n "${ZONE_ID}" ] && [ "${ZONE_ID}" != "null" ]; then
+    PAYLOAD=$(jq -n --arg hosts "${DOMAIN}" '{"hostnames":[($hosts)] , "requested_validity": 825, "upload_ca": false }')
+    RESP=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/origin_certificates" \
+      -H "Authorization: Bearer ${CF_API}" -H "Content-Type: application/json" \
+      --data "${PAYLOAD}")
+    CERT=$(echo "${RESP}" | jq -r '.result.certificate')
+    KEY_CF=$(echo "${RESP}" | jq -r '.result.private_key')
+    if [ -n "${CERT}" ] && [ "${CERT}" != "null" ]; then
+      echo "${CERT}" > "${SSL_DIR}/fullchain.pem"
+      echo "${KEY_CF}" > "${SSL_DIR}/privkey.pem"
+      chmod 600 "${SSL_DIR}/"*.pem
+      CERT_OK=1
+      echo "Cloudflare Origin Certificate получен и сохранён."
+    else
+      echo "Не удалось создать origin certificate через API. Ответ:"
+      echo "${RESP}"
+    fi
+  else
+    echo "Не удалось получить zone id (проверь CF_API_TOKEN и имя зоны)."
+  fi
+fi
+
+if [ "${CERT_OK:-0}" -ne 1 ]; then
+  cat <<'WARN'
+!!! Внимание !!!
+Не удалось автоматически получить сертификат.
+Возможные действия:
+1) В Cloudflare DNS временно переключить vpn.calamity.one на "DNS only" (серое облачко), затем запустить скрипт снова чтобы пройти HTTP-01, или
+2) Сгенерировать Origin Certificate вручную в Cloudflare Dashboard (SSL/TLS -> Origin Server) и вставить certificate + private key в /etc/ssl/xray/fullchain.pem и /etc/ssl/xray/privkey.pem,
+3) Экспортировать CF_API_TOKEN в переменную окружения и запустить скрипт снова (он попытается DNS-01).
+
+После этого запусти скрипт ещё раз.
+WARN
+  exit 1
+fi
+
+# 6) Настроить nginx site
+cat > "${NGINX_CONF}" <<EOF
+server {
+    listen 443 ssl http2;
+    server_name ${DOMAIN};
+
+    ssl_certificate ${SSL_DIR}/fullchain.pem;
+    ssl_certificate_key ${SSL_DIR}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+
+    location /vless {
+        proxy_redirect off;
+        proxy_pass http://127.0.0.1:${XRAY_LISTEN_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    # Optional: default root for the domain
+    location / {
+        return 200 "OK\n";
+    }
+}
+EOF
+
+ln -sf "${NGINX_CONF}" /etc/nginx/sites-enabled/${DOMAIN}.conf
+nginx -t
+systemctl restart nginx
+
+# 7) Создать ключи для xray (uuid + x25519)
+UUID=$(xray uuid)
+echo "uuid: ${UUID}" > "${KEYS_FILE}"
+echo "" >> "${KEYS_FILE}"
+echo "Generating x25519 keypair..."
+X25519_OUT=$(xray x25519)
+# xray x25519 выводит строки, сохраним их
+echo "${X25519_OUT}" >> "${KEYS_FILE}"
+# извлечём публичный ключ и приватный
+PRIVATE_KEY=$(echo "${X25519_OUT}" | awk -F': ' '/PrivateKey/ {print $2}' | tr -d '\r')
+PUBLIC_KEY=$(echo "${X25519_OUT}" | awk -F': ' '/PublicKey/ {print $2}' | tr -d '\r')
+
+# Сгенерируем shortid (16 hex chars)
+SHORTID=$(openssl rand -hex 8)
+echo "shortsid: ${SHORTID}" >> "${KEYS_FILE}"
+
+# 8) Создать конфиг Xray (VLESS WS TLS)
+cat > "${XRAY_CONFIG}" <<JSON
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "listen": "127.0.0.1",
+      "port": ${XRAY_LISTEN_PORT},
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${UUID}",
+            "email": "main",
+            "flow": "xtls-rprx-vision"
