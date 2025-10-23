@@ -25,89 +25,103 @@ export shortsid=$(awk -F': ' '/shortsid/ {print $2}' /usr/local/etc/xray/.keys)
 
 cat << EOF > /usr/local/etc/xray/config.json
 {
-    "log": {
-        "loglevel": "warning"
-    },
-    "routing": {
-        "domainStrategy": "IPIfNonMatch",
-        "rules": [
-            {
-                "type": "field",
-                "domain": ["geosite:category-ads-all"],
-                "outboundTag": "block"
-            }
-        ]
-    },
-    "inbounds": [
-        {
-            "listen": "0.0.0.0",
-            "port": 443,
-            "protocol": "vless",
-            "settings": {
-                "clients": [
-                    {
-                        "email": "main",
-                        "id": "$uuid",
-                        "flow": "xtls-rprx-vision"
-                    }
-                ],
-                "decryption": "none"
-            },
-            "streamSettings": {
-                "network": "tcp",
-                "security": "reality",
-                "realitySettings": {
-                    "show": false,
-                    "dest": "ya.ru:443",
-                    "xver": 0,
-                    "serverNames": ["ya.ru", "example.com"],
-                    "privateKey": "$privatkey",
-                    "allowInsecure": true,
-                    "minClientVer": "",
-                    "maxClientVer": "",
-                    "maxTimeDiff": 0,
-                    "shortIds": ["$shortsid"]
-                }
-            },
-            "sniffing": {
-                "enabled": true,
-                "destOverride": ["http", "tls"]
-            }
+  "log": {
+    "loglevel": "warning"
+  },
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [
+      {
+        "type": "field",
+        "domain": ["geosite:category-ads-all"],
+        "outboundTag": "block"
+      }
+    ]
+  },
+  "inbounds": [
+    {
+      "listen": "0.0.0.0",
+      "port": 443,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "email": "main",
+            "id": "$uuid",
+            "flow": "xtls-rprx-vision"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "ya.ru:443",
+          "xver": 0,
+          "serverNames": [
+            "ya.ru",
+            "stats.vk-portal.net",
+            "sun6-21.userapi.com",
+            "sun6-20.userapi.com",
+            "queuev4.vk.com",
+            "sun6-22.userapi.com",
+            "eh.vk.com",
+            "akashi.vk-portal.net",
+            "st.ozone.ru",
+            "ir.ozone.ru",
+            "vt-1.ozone.ru",
+            "ozone.ru",
+            "splitter.wb.ru",
+            "www.kinopoisk.ru",
+            "speller.yandex.net"
+          ],
+          "privateKey": "$privatkey",
+          "allowInsecure": true,
+          "minClientVer": "",
+          "maxClientVer": "",
+          "maxTimeDiff": 0,
+          "shortIds": ["$shortsid"]
         }
-    ],
-    "outbounds": [
-        {
-            "protocol": "freedom",
-            "tag": "direct"
-        },
-        {
-            "protocol": "blackhole",
-            "tag": "block"
-        }
-    ],
-    "policy": {
-        "levels": {
-            "0": {
-                "handshake": 3,
-                "connIdle": 180
-            }
-        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": ["http", "tls"]
+      }
     }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    },
+    {
+      "protocol": "blackhole",
+      "tag": "block"
+    }
+  ],
+  "policy": {
+    "levels": {
+      "0": {
+        "handshake": 3,
+        "connIdle": 180
+      }
+    }
+  }
 }
 EOF
 
 cat << 'EOF' > /usr/local/bin/userlist
 #!/bin/bash
 emails=($(jq -r '.inbounds[0].settings.clients[].email' "/usr/local/etc/xray/config.json"))
-
 if [[ ${#emails[@]} -eq 0 ]]; then
-    echo "Client list is empty"
-    exit 1
+  echo "Client list is empty"
+  exit 1
 fi
-
 echo "Clients list:"
 for i in "${!emails[@]}"; do
-    echo "$((i+1)). ${emails[$i]}"
+  echo "$((i+1)). ${emails[$i]}"
 done
 EOF
 
@@ -132,14 +146,12 @@ EOF
 cat << 'EOF' > /usr/local/bin/newuser
 #!/bin/bash
 read -p "Enter username (email): " email
-
 if [[ -z "$email" || "$email" == *" "* ]]; then
-    echo "Username cannot be empty or contain spaces. Try again."
-    exit 1
+  echo "Username cannot be empty or contain spaces. Try again."
+  exit 1
 fi
 
 user_json=$(jq --arg email "$email" '.inbounds[0].settings.clients[] | select(.email == $email)' /usr/local/etc/xray/config.json)
-
 if [[ -z "$user_json" ]]; then
   uuid=$(xray uuid)
   jq --arg email "$email" --arg uuid "$uuid" '.inbounds[0].settings.clients += [{"email": $email, "id": $uuid, "flow": "xtls-rprx-vision"}]' /usr/local/etc/xray/config.json > tmp.json && mv tmp.json /usr/local/etc/xray/config.json
@@ -168,51 +180,38 @@ EOF
 cat << 'EOF' > /usr/local/bin/rmuser
 #!/bin/bash
 emails=($(jq -r '.inbounds[0].settings.clients[].email' "/usr/local/etc/xray/config.json"))
-
 if [[ ${#emails[@]} -eq 0 ]]; then
-    echo "No clients to remove."
-    exit 1
+  echo "No clients to remove."
+  exit 1
 fi
-
 echo "Clients list:"
 for i in "${!emails[@]}"; do
-    echo "$((i+1)). ${emails[$i]}"
+  echo "$((i+1)). ${emails[$i]}"
 done
-
 read -p "Enter client number to remove: " choice
-
 if ! [[ "$choice" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > ${#emails[@]} )); then
-    echo "Error: number must be between 1 and ${#emails[@]}"
-    exit 1
+  echo "Error: number must be between 1 and ${#emails[@]}"
+  exit 1
 fi
-
 selected_email="${emails[$((choice - 1))]}"
-
 jq --arg email "$selected_email" '(.inbounds[0].settings.clients) |= map(select(.email != $email))' "/usr/local/etc/xray/config.json" > tmp && mv tmp "/usr/local/etc/xray/config.json"
-
 systemctl restart xray
-
 echo "Client $selected_email removed."
 EOF
 
 cat << 'EOF' > /usr/local/bin/sharelink
 #!/bin/bash
 emails=($(jq -r '.inbounds[0].settings.clients[].email' /usr/local/etc/xray/config.json))
-
 for i in "${!emails[@]}"; do
-   echo "$((i + 1)). ${emails[$i]}"
+  echo "$((i+1)). ${emails[$i]}"
 done
-
 read -p "Choose client: " client
-
 if ! [[ "$client" =~ ^[0-9]+$ ]] || (( client < 1 || client > ${#emails[@]} )); then
-    echo "Error: number must be between 1 and ${#emails[@]}"
-    exit 1
+  echo "Error: number must be between 1 and ${#emails[@]}"
+  exit 1
 fi
-
 selected_email="${emails[$((client - 1))]}"
-
-index=$(jq --arg email "$selected_email" '.inbounds[0].settings.clients | to_entries[] | select(.value.email == $email) | .key'  /usr/local/etc/xray/config.json)
+index=$(jq --arg email "$selected_email" '.inbounds[0].settings.clients | to_entries[] | select(.value.email == $email) | .key' /usr/local/etc/xray/config.json)
 protocol=$(jq -r '.inbounds[0].protocol' /usr/local/etc/xray/config.json)
 port=$(jq -r '.inbounds[0].port' /usr/local/etc/xray/config.json)
 uuid=$(jq --argjson index "$index" -r '.inbounds[0].settings.clients[$index].id' /usr/local/etc/xray/config.json)
