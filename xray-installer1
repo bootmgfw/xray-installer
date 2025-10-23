@@ -61,10 +61,10 @@ cat << EOF > /usr/local/etc/xray/config.json
                 "security": "reality",
                 "realitySettings": {
                     "show": false,
-                    "dest": "sun6-22.userapi.com:443",
+                    "dest": "ya.ru:443",
                     "xver": 0,
                     "serverNames": [
-                        "sun6-22.userapi.com"
+                        "ya.ru"
                     ],
                     "privateKey": "$privatkey",
                     "minClientVer": "",
