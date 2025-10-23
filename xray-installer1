@@ -1,4 +1,8 @@
 #!/bin/bash
+# Xray Reality VLESS INSTALER - максимальный обход DPI/глушилок РФ мобильного интернета
+
+set -e
+
 apt update
 apt install qrencode curl jq -y
 
@@ -19,11 +23,84 @@ echo "shortsid: $(openssl rand -hex 8)" >> /usr/local/etc/xray/.keys
 echo "uuid: $(xray uuid)" >> /usr/local/etc/xray/.keys
 xray x25519 >> /usr/local/etc/xray/.keys
 
-export uuid=$(cat /usr/local/etc/xray/.keys | awk -F': ' '/uuid/ {print $2}')
-export privatkey=$(cat /usr/local/etc/xray/.keys | awk -F': ' '/PrivateKey/ {print $2}')
-export shortsid=$(cat /usr/local/etc/xray/.keys | awk -F': ' '/shortsid/ {print $2}')
+export uuid=$(awk -F': ' '/uuid/ {print $2}' /usr/local/etc/xray/.keys)
+export privatkey=$(awk -F': ' '/PrivateKey/ {print $2}' /usr/local/etc/xray/.keys)
+export shortsid=$(awk -F': ' '/shortsid/ {print $2}' /usr/local/etc/xray/.keys)
 
-touch /usr/local/etc/xray/config.json
+# --- Списки SNI/DEST ---
+allowed_sni=(
+  "ya.ru"
+  "mail.ru"
+  "sun6-22.userapi.com"
+  "stats.vk-portal.net"
+  "avatars.mds.yandex.net"
+  "top-fwz1.mail.ru"
+  "ad.mail.ru"
+  "st.ozone.ru"
+  "ir.ozone.ru"
+  "vt-1.ozone.ru"
+  "io.ozone.ru"
+  "xapi.ozon.ru"
+  "online.sberbank.ru"
+  "goya.rutube.ru"
+  "www.kinopoisk.ru"
+  "dzen.ru"
+  "yastatic.net"
+  "sntr.avito.ru"
+  "www.magnit.com"
+  "2gis.ru"
+  "splitter.wb.ru"
+  "alfabank.ru"
+  "login.vk.com"
+  "ozone.ru"
+  "storage.yandexcloud.net"
+  # ...добавь свои, если нужно!
+)
+
+echo "Выбери SNI/DEST для обхода (домен должен быть разрешён оператором):"
+for i in "${!allowed_sni[@]}"; do
+    echo "$((i+1)). ${allowed_sni[$i]}"
+done
+
+read -p "Номер домена (или Enter для ya.ru): " choice
+
+if [[ -z "$choice" ]]; then
+  selected_sni="ya.ru"
+elif ! [[ "$choice" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > ${#allowed_sni[@]} )); then
+  echo "Некорректный номер, используем ya.ru"
+  selected_sni="ya.ru"
+else
+  selected_sni="${allowed_sni[$((choice-1))]}"
+fi
+
+# --- FINGERPRINT/JА3 ---
+echo "Выбери fingerprint для обхода DPI (fp):"
+echo "1. firefox"
+echo "2. chrome"
+echo "3. safari"
+echo "4. random"
+read -p "Номер fp (или Enter для firefox): " fpchoice
+
+case "$fpchoice" in
+  2) fp="chrome" ;;
+  3) fp="safari" ;;
+  4) fp="random" ;;
+  *) fp="firefox" ;;
+esac
+
+# --- PORT SELECTION ---
+read -p "На каком порту слушать? (обычно 443, Enter для 443): " port
+if [[ -z "$port" ]]; then
+  port=443
+fi
+
+# --- RU Location Warning ---
+echo ""
+echo "!!! ВНИМАНИЕ: для мобильного РФ рекомендуется сервер с RU-локацией (aeza.ru, vdsina.ru, selectel.ru и пр.)"
+echo "!!! В некоторых регионах работает только RU-локация и только определённые домены (SNI)!"
+echo ""
+
+# --- Генерация конфига Xray с максимальным обходом ---
 cat << EOF > /usr/local/etc/xray/config.json
 {
     "log": { "loglevel": "warning" },
@@ -36,7 +113,7 @@ cat << EOF > /usr/local/etc/xray/config.json
     "inbounds": [
         {
             "listen": "0.0.0.0",
-            "port": 443,
+            "port": $port,
             "protocol": "vless",
             "settings": {
                 "clients": [
@@ -49,10 +126,10 @@ cat << EOF > /usr/local/etc/xray/config.json
                 "security": "reality",
                 "realitySettings": {
                     "show": false,
-                    "dest": "ya.ru:443",
+                    "dest": "${selected_sni}:443",
                     "xver": 0,
                     "serverNames": [
-                        "ya.ru"
+                        "${selected_sni}"
                     ],
                     "privateKey": "$privatkey",
                     "minClientVer": "",
@@ -61,6 +138,9 @@ cat << EOF > /usr/local/etc/xray/config.json
                     "shortIds": [
                         "$shortsid"
                     ]
+                },
+                "realitySettingsExt": {
+                    "fingerprint": "$fp"
                 }
             },
             "sniffing": { "enabled": true, "destOverride": ["http", "tls"] }
@@ -74,16 +154,17 @@ cat << EOF > /usr/local/etc/xray/config.json
 }
 EOF
 
+systemctl restart xray
+
+# --- Скрипты управления пользователями (userlist/mainuser/newuser/rmuser/sharelink) ---
 touch /usr/local/bin/userlist
 cat << 'EOF' > /usr/local/bin/userlist
 #!/bin/bash
 emails=($(jq -r '.inbounds[0].settings.clients[].email' "/usr/local/etc/xray/config.json"))
-
 if [[ ${#emails[@]} -eq 0 ]]; then
     echo "Client list is empty"
     exit 1
 fi
-
 echo "Clients list:"
 for i in "${!emails[@]}"; do
     echo "$((i+1)). ${emails[$i]}"
@@ -96,12 +177,13 @@ cat << 'EOF' > /usr/local/bin/mainuser
 #!/bin/bash
 protocol=$(jq -r '.inbounds[0].protocol' /usr/local/etc/xray/config.json)
 port=$(jq -r '.inbounds[0].port' /usr/local/etc/xray/config.json)
-uuid=$(cat /usr/local/etc/xray/.keys | awk -F': ' '/uuid/ {print $2}')
-pbk=$(cat /usr/local/etc/xray/.keys | awk -F': ' '/Password/ {print $2}')
-sid=$(cat /usr/local/etc/xray/.keys | awk -F': ' '/shortsid/ {print $2}')
+uuid=$(awk -F': ' '/uuid/ {print $2}' /usr/local/etc/xray/.keys)
+pbk=$(awk -F': ' '/Password/ {print $2}' /usr/local/etc/xray/.keys)
+sid=$(awk -F': ' '/shortsid/ {print $2}' /usr/local/etc/xray/.keys)
 sni=$(jq -r '.inbounds[0].streamSettings.realitySettings.serverNames[0]' /usr/local/etc/xray/config.json)
+fp=$(jq -r '.inbounds[0].streamSettings.realitySettingsExt.fingerprint' /usr/local/etc/xray/config.json)
 ip=$(timeout 3 curl -4 -s icanhazip.com)
-link="$protocol://$uuid@$ip:$port?security=reality&sni=$sni&fp=firefox&pbk=$pbk&sid=$sid&spx=/&type=tcp&flow=xtls-rprx-vision&encryption=none#vless-$ip"
+link="$protocol://$uuid@$ip:$port?security=reality&sni=$sni&fp=$fp&pbk=$pbk&sid=$sid&spx=/&type=tcp&flow=xtls-rprx-vision&encryption=none#vless-$ip"
 echo ""
 echo "Connection link:"
 echo "$link"
@@ -115,14 +197,11 @@ touch /usr/local/bin/newuser
 cat << 'EOF' > /usr/local/bin/newuser
 #!/bin/bash
 read -p "Enter username (email): " email
-
 if [[ -z "$email" || "$email" == *" "* ]]; then
     echo "Username cannot be empty or contain spaces. Try again."
     exit 1
 fi
-
 user_json=$(jq --arg email "$email" '.inbounds[0].settings.clients[] | select(.email == $email)' /usr/local/etc/xray/config.json)
-
 if [[ -z "$user_json" ]]; then
 uuid=$(xray uuid)
 jq --arg email "$email" --arg uuid "$uuid" '.inbounds[0].settings.clients += [{"email": $email, "id": $uuid, "flow": "xtls-rprx-vision"}]' /usr/local/etc/xray/config.json > tmp.json && mv tmp.json /usr/local/etc/xray/config.json
@@ -131,12 +210,13 @@ index=$(jq --arg email "$email" '.inbounds[0].settings.clients | to_entries[] | 
 protocol=$(jq -r '.inbounds[0].protocol' /usr/local/etc/xray/config.json)
 port=$(jq -r '.inbounds[0].port' /usr/local/etc/xray/config.json)
 uuid=$(jq --argjson index "$index" -r '.inbounds[0].settings.clients[$index].id' /usr/local/etc/xray/config.json)
-pbk=$(cat /usr/local/etc/xray/.keys | awk -F': ' '/Password/ {print $2}')
-sid=$(cat /usr/local/etc/xray/.keys | awk -F': ' '/shortsid/ {print $2}')
+pbk=$(awk -F': ' '/Password/ {print $2}' /usr/local/etc/xray/.keys)
+sid=$(awk -F': ' '/shortsid/ {print $2}' /usr/local/etc/xray/.keys)
 username=$(jq --argjson index "$index" -r '.inbounds[0].settings.clients[$index].email' /usr/local/etc/xray/config.json)
 sni=$(jq -r '.inbounds[0].streamSettings.realitySettings.serverNames[0]' /usr/local/etc/xray/config.json)
+fp=$(jq -r '.inbounds[0].streamSettings.realitySettingsExt.fingerprint' /usr/local/etc/xray/config.json)
 ip=$(curl -4 -s icanhazip.com)
-link="$protocol://$uuid@$ip:$port?security=reality&sni=$sni&fp=firefox&pbk=$pbk&sid=$sid&spx=/&type=tcp&flow=xtls-rprx-vision&encryption=none#$username"
+link="$protocol://$uuid@$ip:$port?security=reality&sni=$sni&fp=$fp&pbk=$pbk&sid=$sid&spx=/&type=tcp&flow=xtls-rprx-vision&encryption=none#$username"
 echo ""
 echo "Connection link:"
 echo "$link"
@@ -153,32 +233,24 @@ touch /usr/local/bin/rmuser
 cat << 'EOF' > /usr/local/bin/rmuser
 #!/bin/bash
 emails=($(jq -r '.inbounds[0].settings.clients[].email' "/usr/local/etc/xray/config.json"))
-
 if [[ ${#emails[@]} -eq 0 ]]; then
     echo "No clients to remove."
     exit 1
 fi
-
 echo "Clients list:"
 for i in "${!emails[@]}"; do
     echo "$((i+1)). ${emails[$i]}"
 done
-
 read -p "Enter client number to remove: " choice
-
 if ! [[ "$choice" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > ${#emails[@]} )); then
     echo "Error: number must be between 1 and ${#emails[@]}"
     exit 1
 fi
-
 selected_email="${emails[$((choice - 1))]}"
-
 jq --arg email "$selected_email" \
    '(.inbounds[0].settings.clients) |= map(select(.email != $email))' \
    "/usr/local/etc/xray/config.json" > tmp && mv tmp "/usr/local/etc/xray/config.json"
-
 systemctl restart xray
-
 echo "Client $selected_email removed."
 EOF
 chmod +x /usr/local/bin/rmuser
@@ -187,30 +259,26 @@ touch /usr/local/bin/sharelink
 cat << 'EOF' > /usr/local/bin/sharelink
 #!/bin/bash
 emails=($(jq -r '.inbounds[0].settings.clients[].email' /usr/local/etc/xray/config.json))
-
 for i in "${!emails[@]}"; do
    echo "$((i + 1)). ${emails[$i]}"
 done
-
 read -p "Choose client: " client
-
 if ! [[ "$client" =~ ^[0-9]+$ ]] || (( client < 1 || client > ${#emails[@]} )); then
     echo "Error: number must be between 1 and ${#emails[@]}"
     exit 1
 fi
-
 selected_email="${emails[$((client - 1))]}"
-
 index=$(jq --arg email "$selected_email" '.inbounds[0].settings.clients | to_entries[] | select(.value.email == $email) | .key'  /usr/local/etc/xray/config.json)
 protocol=$(jq -r '.inbounds[0].protocol' /usr/local/etc/xray/config.json)
 port=$(jq -r '.inbounds[0].port' /usr/local/etc/xray/config.json) 
 uuid=$(jq --argjson index "$index" -r '.inbounds[0].settings.clients[$index].id' /usr/local/etc/xray/config.json)
-pbk=$(cat /usr/local/etc/xray/.keys | awk -F': ' '/Password/ {print $2}')
-sid=$(cat /usr/local/etc/xray/.keys | awk -F': ' '/shortsid/ {print $2}')
+pbk=$(awk -F': ' '/Password/ {print $2}' /usr/local/etc/xray/.keys)
+sid=$(awk -F': ' '/shortsid/ {print $2}' /usr/local/etc/xray/.keys)
 username=$(jq --argjson index "$index" -r '.inbounds[0].settings.clients[$index].email' /usr/local/etc/xray/config.json)
 sni=$(jq -r '.inbounds[0].streamSettings.realitySettings.serverNames[0]' /usr/local/etc/xray/config.json)
+fp=$(jq -r '.inbounds[0].streamSettings.realitySettingsExt.fingerprint' /usr/local/etc/xray/config.json)
 ip=$(curl -4 -s icanhazip.com)
-link="$protocol://$uuid@$ip:$port?security=reality&sni=$sni&fp=firefox&pbk=$pbk&sid=$sid&spx=/&type=tcp&flow=xtls-rprx-vision&encryption=none#$username"
+link="$protocol://$uuid@$ip:$port?security=reality&sni=$sni&fp=$fp&pbk=$pbk&sid=$sid&spx=/&type=tcp&flow=xtls-rprx-vision&encryption=none#$username"
 echo ""
 echo "Connection link:"
 echo "$link"
@@ -222,9 +290,10 @@ chmod +x /usr/local/bin/sharelink
 
 systemctl restart xray
 
-echo "Xray-core successfully installed (SNI: ya.ru)"
+echo "Xray-core установлен (SNI: $selected_sni, Fingerprint: $fp, Port: $port)"
 mainuser
 
+# --- Help ---
 touch $HOME/help
 cat << 'EOF' > $HOME/help
 
@@ -244,8 +313,10 @@ Restart command:
 
     systemctl restart xray
 
-Change SNI for bypass:
-    nano /usr/local/etc/xray/config.json # (change dest/serverNames)
+Change SNI/fingerprint/port for bypass:
+    nano /usr/local/etc/xray/config.json # (change dest/serverNames/fingerprint/port)
     systemctl restart xray
+
+!!! ВАЖНО: если не работает — пробуй другой SNI, fingerprint, порт, RU-локацию, и следи за актуальным списком "дырявых" доменов.
 
 EOF
