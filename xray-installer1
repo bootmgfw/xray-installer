@@ -23,41 +23,6 @@ export uuid=$(cat /usr/local/etc/xray/.keys | awk -F': ' '/uuid/ {print $2}')
 export privatkey=$(cat /usr/local/etc/xray/.keys | awk -F': ' '/PrivateKey/ {print $2}')
 export shortsid=$(cat /usr/local/etc/xray/.keys | awk -F': ' '/shortsid/ {print $2}')
 
-# --- Список разрешённых SNI/DEST доменов ---
-allowed_sni=(
-  "sun6-22.userapi.com"
-  "stats.vk-portal.net"
-  "avatars.mds.yandex.net"
-  "top-fwz1.mail.ru"
-  "ad.mail.ru"
-  "st.ozone.ru"
-  "ir.ozone.ru"
-  "vt-1.ozone.ru"
-  "io.ozone.ru"
-  "xapi.ozon.ru"
-  "online.sberbank.ru"
-  "goya.rutube.ru"
-  "www.kinopoisk.ru"
-  "dzen.ru"
-  "yastatic.net"
-  "sntr.avito.ru"
-  "www.magnit.com"
-  "2gis.ru"
-  # Добавь свои домены из актуального списка!
-)
-
-# --- Выбор SNI/DEST по доступности ---
-for sni in "${allowed_sni[@]}"; do
-  if timeout 3 curl -s --head "https://${sni}" | grep -q "200\|301\|302"; then
-    selected_sni="$sni"
-    break
-  fi
-done
-
-if [ -z "$selected_sni" ]; then
-  selected_sni="ya.ru" # fallback если ни один не работает
-fi
-
 touch /usr/local/etc/xray/config.json
 cat << EOF > /usr/local/etc/xray/config.json
 {
@@ -84,10 +49,10 @@ cat << EOF > /usr/local/etc/xray/config.json
                 "security": "reality",
                 "realitySettings": {
                     "show": false,
-                    "dest": "${selected_sni}:443",
+                    "dest": "ya.ru:443",
                     "xver": 0,
                     "serverNames": [
-                        "${selected_sni}"
+                        "ya.ru"
                     ],
                     "privateKey": "$privatkey",
                     "minClientVer": "",
@@ -257,7 +222,7 @@ chmod +x /usr/local/bin/sharelink
 
 systemctl restart xray
 
-echo "Xray-core successfully installed (SNI: $selected_sni)"
+echo "Xray-core successfully installed (SNI: ya.ru)"
 mainuser
 
 touch $HOME/help
