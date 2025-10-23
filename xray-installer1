@@ -1,173 +1,139 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-# =================== Настройки ===================
-DOMAIN="vpn.example.com"
-SNI="ya.ru"
-XRAY_PORT=443
-XRAY_CONFIG="/usr/local/etc/xray/config.json"
-KEYS_FILE="/usr/local/etc/xray/.keys"
-SSL_DIR="/etc/ssl/xray"
-
-# ====== ВСТАВЬ ТУТ СВОЙ ORIGIN CERT И PRIVATE KEY (Cloudflare или свой) ======
-CERT_CONTENT='-----BEGIN CERTIFICATE-----
-MIIEpDCCA4ygAwIBAgIUW2KMEX5vbszn9GEfMt2Uu0SjS0cwDQYJKoZIhvcNAQEL
-BQAwgYsxCzAJBgNVBAYTAlVTMRkwFwYDVQQKExBDbG91ZEZsYXJlLCBJbmMuMTQw
-MgYDVQQLEytDbG91ZEZsYXJlIE9yaWdpbiBTU0wgQ2VydGlmaWNhdGUgQXV0aG9y
-aXR5MRYwFAYDVQQHEw1TYW4gRnJhbmNpc2NvMRMwEQYDVQQIEwpDYWxpZm9ybmlh
-MB4XDTI1MTAxNTE0NDYwMFoXDTQwMTAxMTE0NDYwMFowYjEZMBcGA1UEChMQQ2xv
-dWRGbGFyZSwgSW5jLjEdMBsGA1UECxMUQ2xvdWRGbGFyZSBPcmlnaW4gQ0ExJjAk
-BgNVBAMTHUNsb3VkRmxhcmUgT3JpZ2luIENlcnRpZmljYXRlMIIBIjANBgkqhkiG
-9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxb+AYm3cTF1Se9Rggl4zrdbBL4bxVZLoOwIj
-f1cf/saB0AzcLgJqWBseZUwQAU0LHXXkz6ZinnIJJx/h1uEZp6oQwdoECZwQ29WK
-na2S3Ar4cwebQ9tBlY/2OKMsll07LHPx3N0C1ijS3aRiveFWOwy5qzHAdyhbjaA7
-/VinrgRWwm91AyS3/scZLRaK7KrbS5JS2Qx0+uCPgfYuQ9LNWAiK+PcOz0TEVdG7
-bGsy3FMPgd+JijiAFJKHSND9dGn3ZSi5w/AzQmBHvtSI4x0XcdAkLueW94odv8Cf
-9oae1x/I98bz3x+MtyuozCPRdkYgwDMNGJ0q6zaf8vA+qofOywIDAQABo4IBJjCC
-ASIwDgYDVR0PAQH/BAQDAgWgMB0GA1UdJQQWMBQGCCsGAQUFBwMCBggrBgEFBQcD
-ATAMBgNVHRMBAf8EAjAAMB0GA1UdDgQWBBTRJkIQT8l6Bgzcj8R1pcHcIPGHpDAf
-BgNVHSMEGDAWgBQk6FNXXXw0QIep65TbuuEWePwppDBABggrBgEFBQcBAQQ0MDIw
-MAYIKwYBBQUHMAGGJGh0dHA6Ly9vY3NwLmNsb3VkZmxhcmUuY29tL29yaWdpbl9j
-YTAnBgNVHREEIDAegg4qLmNhbGFtaXR5Lm9uZYIMY2FsYW1pdHkub25lMDgGA1Ud
-HwQxMC8wLaAroCmGJ2h0dHA6Ly9jcmwuY2xvdWRmbGFyZS5jb20vb3JpZ2luX2Nh
-LmNybDANBgkqhkiG9w0BAQsFAAOCAQEAkd+sF2GBlCNLK/UleH7HLJVcTDaZYuP1
-rAWf1Pq0hQ/TmhhmioZg84qbYXub5GnTukpT2pa5au/EiMowhxtYvV4X1KUnmxH4
-aOfGlvaD4r7yfsYGtMkvpOHWflAL2juDwUdzlmYq6Gl/1/xFYyjGPAhdHKWbGCqb
-ud/hVDQ6ch8jaWZt7fcIuPUOplXChZbgUgjOoDRhN/0LG3JlvcPygOFY51Kn1fux
-6o65joD9JKxboYrWL0L2rZKH1BOdvke9wXcGA3dEHzRZr9U+IZcig7kI1IW8bz1+
-zr3Ckq62fyPCORUGaUVON9i1OnVKjY+Z5HbcxNCG0+Mt5E7W/jrxqw==
------END CERTIFICATE-----'
-
-KEY_CONTENT='-----BEGIN PRIVATE KEY-----
-MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQDFv4BibdxMXVJ7
-1GCCXjOt1sEvhvFVkug7AiN/Vx/+xoHQDNwuAmpYGx5lTBABTQsddeTPpmKecgkn
-H+HW4RmnqhDB2gQJnBDb1YqdrZLcCvhzB5tD20GVj/Y4oyyWXTssc/Hc3QLWKNLd
-pGK94VY7DLmrMcB3KFuNoDv9WKeuBFbCb3UDJLf+xxktForsqttLklLZDHT64I+B
-9i5D0s1YCIr49w7PRMRV0btsazLcUw+B34mKOIAUkodI0P10afdlKLnD8DNCYEe+
-1IjjHRdx0CQu55b3ih2/wJ/2hp7XH8j3xvPfH4y3K6jMI9F2RiDAMw0YnSrrNp/y
-8D6qh87LAgMBAAECggEAPkO3rYZxDLx/uczb3IDD3fNWXdwsBildJSNdwP1Sbjrb
-6gH6nCQXjwlu7y9dhMNZAhw6gSWfPMukVSTlS+8R0GisoRVAGzSAXG/nFxHtwYpU
-w4d8HIgfpPOw8BF0+x19Adi6KbSPbZZqGu7lRmt65tnxZlWiiAJ1nWj8Kp/tIE3g
-XD9aqVsHKznmQOU5sguHXNTFniZdtg9ZuGiOUKTUDlu++/Kz0PU8iSvr1dkfF8yG
-tTuMjWBUAVoiUXwL87dL1tVQkXUsbiQKoH337Dx6NGMFEc4Cjp4tgOyFtULkd60J
-hX3Y/dt2CpfRF46HD4sLui4uN7iAhhoBogg/+NPEdQKBgQDyYiwfQKzMeEVMdDle
-30BV2ZD79TxdYD/T6VQUryaE1IfLOY7rqB9SRxXrRMAPSjA73yaKy+43nHAbutGW
-hzixzKCHIvLi2KZztKfEgcXR2kR/swgBofojoOt42JRydUhQQpOxsFQ4Ff1Qmqmv
-A0QT+Uc7Hi2AQmsYSZiHXEy83wKBgQDQ22gWnIqiRa39SxwsgHonWvDwh9Lyf8mB
-2A+HXQsnd+/dEpXcoU/RURFpv3XU+Y/PxjM2q2wj1sIMurwTl+40lGSNCGUlWTn9
-RSBGiIBGFWylq7pP0qp0qenuTqmPMY7oUo6ddlB2+XM5trny1btqApNcpTfOdHxP
-S5S9ef0/lQKBgQDAGJYnXraUhm1FnocpbX4ri/af+UgSKQntBOsiSX4Zn+bPZZqj
-oebQ6o2wnBgrBf0cNkrxjZYKdO1UzMb2qcyA/U/sSgJ9Tn79DJw53S/OlVHccyNR
-R/Ja8losuFlOLS1Wjq1HEhxtJuBQVYNNtSTrP5D4hX5CPGFsKke8X6ZhuQKBgQCd
-rEYUa/GtN/V2N3H5lrShaWJj8+Yo9Jfn0nlGs9Nr5HvM5e8FNTLQzubacpQ+SHlt
-Xi/jod5t3/93JLJACH7oau7OGfxiCc5higInvX05a4suN0rcYCoXEP9tzSzs0XkV
-ot3PujZc201F0NDoprpp+a/OTVyoHACMzH5p3OJ3UQKBgQC/UWHt83yXduwxjh+i
-y7wzoCSqLmjN+F149oMjoLLO9DUwxDygNX3qlSxfFc/jLzmmyKHPyGOIr/G2FizJ
-FZp1pHJyygPYqYdcph+bp/CVFSr1yJX7J50q3/Du0YkzwXvmk+84BmX2MUudeY5R
-CzNg9IH1dpQ5wLVvHmkY94yyMQ==
------END PRIVATE KEY-----'
-
-# =================================================
-
-echo ">>> Подготовка окружения..."
+#!/bin/bash
 apt update
-apt install -y curl jq qrencode socat ca-certificates openssl
+apt install qrencode curl jq -y
 
-# ====== Установка Xray ======
-if ! command -v xray >/dev/null 2>&1; then
-  echo ">>> Устанавливаем Xray..."
-  bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" install
+bbr=$(sysctl -a | grep net.ipv4.tcp_congestion_control)
+if [ "$bbr" = "net.ipv4.tcp_congestion_control = bbr" ]; then
+  echo "bbr is already enabled"
+else
+  echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+  echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+  sysctl -p
+  echo "bbr enabled"
 fi
 
-# ====== Сохраняем сертификат и ключ ======
-mkdir -p "${SSL_DIR}"
-echo "$CERT_CONTENT" > "${SSL_DIR}/fullchain.pem"
-echo "$KEY_CONTENT" > "${SSL_DIR}/privkey.pem"
-chmod 600 "${SSL_DIR}/privkey.pem"
-chmod 644 "${SSL_DIR}/fullchain.pem"
-chown root:root "${SSL_DIR}/"*
+bash -c "$(curl -4 -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+[ -f /usr/local/etc/xray/.keys ] && rm /usr/local/etc/xray/.keys
+touch /usr/local/etc/xray/.keys
+echo "shortsid: $(openssl rand -hex 8)" >> /usr/local/etc/xray/.keys
+echo "uuid: $(xray uuid)" >> /usr/local/etc/xray/.keys
+xray x25519 >> /usr/local/etc/xray/.keys
 
-# ====== Генерируем UUID и ключи X25519 ======
-mkdir -p /usr/local/etc/xray
-UUID=$(xray uuid)
-X25519_OUTPUT=$(xray x25519)
-PUBKEY=$(echo "${X25519_OUTPUT}" | awk -F': ' '/PublicKey/ {print $2}' | tr -d '\r')
-PRIVKEY_X=$(echo "${X25519_OUTPUT}" | awk -F': ' '/PrivateKey/ {print $2}' | tr -d '\r')
-SHORTSID=$(openssl rand -hex 8)
+export uuid=$(cat /usr/local/etc/xray/.keys | awk -F': ' '/uuid/ {print $2}')
+export privatkey=$(cat /usr/local/etc/xray/.keys | awk -F': ' '/PrivateKey/ {print $2}')
+export shortsid=$(cat /usr/local/etc/xray/.keys | awk -F': ' '/shortsid/ {print $2}')
 
-echo "uuid: ${UUID}" > "${KEYS_FILE}"
-echo "PublicKey: ${PUBKEY}" >> "${KEYS_FILE}"
-echo "PrivateKey: ${PRIVKEY_X}" >> "${KEYS_FILE}"
-echo "shortsid: ${SHORTSID}" >> "${KEYS_FILE}"
-chmod 600 "${KEYS_FILE}"
+# --- Список разрешённых SNI/DEST доменов ---
+allowed_sni=(
+  "sun6-22.userapi.com"
+  "stats.vk-portal.net"
+  "avatars.mds.yandex.net"
+  "top-fwz1.mail.ru"
+  "ad.mail.ru"
+  "st.ozone.ru"
+  "ir.ozone.ru"
+  "vt-1.ozone.ru"
+  "io.ozone.ru"
+  "xapi.ozon.ru"
+  "online.sberbank.ru"
+  "goya.rutube.ru"
+  "www.kinopoisk.ru"
+  "dzen.ru"
+  "yastatic.net"
+  "sntr.avito.ru"
+  "www.magnit.com"
+  "2gis.ru"
+  # ...добавь нужные из СНИ-списка
+)
 
-# ====== Генерация config.json ======
-cat > "${XRAY_CONFIG}" <<JSON
+# --- Выбор SNI/DEST по доступности ---
+for sni in "${allowed_sni[@]}"; do
+  if timeout 3 curl -s --head "https://${sni}" | grep -q "200\|301\|302"; then
+    selected_sni="$sni"
+    break
+  fi
+done
+
+if [ -z "$selected_sni" ]; then
+  selected_sni="ya.ru" # fallback
+fi
+
+touch /usr/local/etc/xray/config.json
+cat << EOF > /usr/local/etc/xray/config.json
 {
-  "log": { "loglevel": "warning" },
-  "inbounds": [
-    {
-      "listen": "0.0.0.0",
-      "port": ${XRAY_PORT},
-      "protocol": "vless",
-      "settings": {
-        "clients": [
-          {
-            "email": "main",
-            "id": "${UUID}",
-            "flow": "xtls-rprx-vision"
-          }
-        ],
-        "decryption": "none"
-      },
-      "streamSettings": {
-        "network": "ws",
-        "security": "tls",
-        "tlsSettings": {
-          "certificates": [
-            {
-              "certificateFile": "${SSL_DIR}/fullchain.pem",
-              "keyFile": "${SSL_DIR}/privkey.pem"
-            }
-          ]
-        },
-        "wsSettings": {
-          "path": "/vless",
-          "headers": { "Host": "${DOMAIN}" }
+    "log": { "loglevel": "warning" },
+    "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+            { "type": "field", "domain": ["geosite:category-ads-all"], "outboundTag": "block" }
+        ]
+    },
+    "inbounds": [
+        {
+            "listen": "0.0.0.0",
+            "port": 443,
+            "protocol": "vless",
+            "settings": {
+                "clients": [
+                    { "email": "main", "id": "$uuid", "flow": "xtls-rprx-vision" }
+                ],
+                "decryption": "none"
+            },
+            "streamSettings": {
+                "network": "tcp",
+                "security": "reality",
+                "realitySettings": {
+                    "show": false,
+                    "dest": "${selected_sni}:443",
+                    "xver": 0,
+                    "serverNames": [
+                        "${selected_sni}"
+                    ],
+                    "privateKey": "$privatkey",
+                    "minClientVer": "",
+                    "maxClientVer": "",
+                    "maxTimeDiff": 0,
+                    "shortIds": [
+                        "$shortsid"
+                    ]
+                }
+            },
+            "sniffing": { "enabled": true, "destOverride": ["http", "tls"] }
         }
-      }
-    }
-  ],
-  "outbounds": [{ "protocol": "freedom" }]
+    ],
+    "outbounds": [
+        { "protocol": "freedom", "tag": "direct" },
+        { "protocol": "blackhole", "tag": "block" }
+    ],
+    "policy": { "levels": { "0": { "handshake": 3, "connIdle": 180 } } }
 }
-JSON
+EOF
 
-# ====== Настройка systemd ======
-systemctl daemon-reload || true
-systemctl enable xray --now || true
-sleep 1
+# Дальше твои userlist, mainuser, newuser, rmuser, sharelink без изменений...
 
-if ! systemctl is-active --quiet xray; then
-  echo "Ошибка: Xray не запущен, показываю логи:"
-  journalctl -u xray -n 50 --no-pager
-  exit 1
-fi
+systemctl restart xray
 
-# ====== Генерация ссылки и QR ======
-LINK="vless://${UUID}@${DOMAIN}:443?type=ws&security=tls&sni=${SNI}&host=${DOMAIN}&path=%2Fvless&fp=chrome&pbk=${PUBKEY}&sid=${SHORTSID}&flow=xtls-rprx-vision#${DOMAIN}"
+echo "Xray-core successfully installed (SNI: $selected_sni)"
+mainuser
 
-echo
-echo "=== УСТАНОВКА ЗАВЕРШЕНА ==="
-echo "Домен: ${DOMAIN}"
-echo "SNI: ${SNI}"
-echo
-echo "Ссылка для подключения:"
-echo "${LINK}"
-echo
-echo "QR-код:"
-echo "${LINK}" | qrencode -t ansiutf8
-echo
-echo "Полезные команды:"
-echo " journalctl -u xray -f   # просмотр логов"
-echo " systemctl restart xray  # перезапуск"
-echo
+touch $HOME/help
+cat << 'EOF' > $HOME/help
+
+Xray user management commands:
+    mainuser - show connection link for main user
+    newuser - create new user
+    rmuser - remove users
+    sharelink - show users and generate connection link for them
+    userlist - show clients list
+
+Config file:
+    /usr/local/etc/xray/config.json
+
+Restart command:
+    systemctl restart xray
+
+Change SNI for bypass:
+    nano /usr/local/etc/xray/config.json # (change dest/serverNames)
+    systemctl restart xray
+
+EOF
