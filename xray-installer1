@@ -1,5 +1,5 @@
 #!/bin/bash
-# Xray Reality VLESS INSTALER - максимальный обход DPI/глушилок РФ мобильного интернета
+# Xray Reality VLESS INSTALLER - максимальный обход DPI/глушилок мобильного интернета РФ
 
 set -e
 
@@ -27,7 +27,7 @@ export uuid=$(awk -F': ' '/uuid/ {print $2}' /usr/local/etc/xray/.keys)
 export privatkey=$(awk -F': ' '/PrivateKey/ {print $2}' /usr/local/etc/xray/.keys)
 export shortsid=$(awk -F': ' '/shortsid/ {print $2}' /usr/local/etc/xray/.keys)
 
-# --- Списки SNI/DEST ---
+# --- Список SNI/DEST ---
 allowed_sni=(
   "ya.ru"
   "mail.ru"
@@ -54,10 +54,10 @@ allowed_sni=(
   "login.vk.com"
   "ozone.ru"
   "storage.yandexcloud.net"
-  # ...добавь свои, если нужно!
+  # ...добавь свои!
 )
 
-echo "Выбери SNI/DEST для обхода (домен должен быть разрешён оператором):"
+echo "========== SNI/DEST =========="
 for i in "${!allowed_sni[@]}"; do
     echo "$((i+1)). ${allowed_sni[$i]}"
 done
@@ -73,8 +73,7 @@ else
   selected_sni="${allowed_sni[$((choice-1))]}"
 fi
 
-# --- FINGERPRINT/JА3 ---
-echo "Выбери fingerprint для обхода DPI (fp):"
+echo "========== fingerprint (fp) DPI =========="
 echo "1. firefox"
 echo "2. chrome"
 echo "3. safari"
@@ -88,19 +87,16 @@ case "$fpchoice" in
   *) fp="firefox" ;;
 esac
 
-# --- PORT SELECTION ---
 read -p "На каком порту слушать? (обычно 443, Enter для 443): " port
 if [[ -z "$port" ]]; then
   port=443
 fi
 
-# --- RU Location Warning ---
 echo ""
-echo "!!! ВНИМАНИЕ: для мобильного РФ рекомендуется сервер с RU-локацией (aeza.ru, vdsina.ru, selectel.ru и пр.)"
-echo "!!! В некоторых регионах работает только RU-локация и только определённые домены (SNI)!"
+echo "!!! ВНИМАНИЕ: Для мобильного РФ рекомендуется сервер с RU-локацией!"
+echo "!!! Иногда работает только RU-локация и только определённые домены!"
 echo ""
 
-# --- Генерация конфига Xray с максимальным обходом ---
 cat << EOF > /usr/local/etc/xray/config.json
 {
     "log": { "loglevel": "warning" },
@@ -156,7 +152,7 @@ EOF
 
 systemctl restart xray
 
-# --- Скрипты управления пользователями (userlist/mainuser/newuser/rmuser/sharelink) ---
+# === userlist ===
 touch /usr/local/bin/userlist
 cat << 'EOF' > /usr/local/bin/userlist
 #!/bin/bash
@@ -172,6 +168,7 @@ done
 EOF
 chmod +x /usr/local/bin/userlist
 
+# === mainuser ===
 touch /usr/local/bin/mainuser
 cat << 'EOF' > /usr/local/bin/mainuser
 #!/bin/bash
@@ -193,6 +190,7 @@ echo ${link} | qrencode -t ansiutf8
 EOF
 chmod +x /usr/local/bin/mainuser
 
+# === newuser ===
 touch /usr/local/bin/newuser
 cat << 'EOF' > /usr/local/bin/newuser
 #!/bin/bash
@@ -229,6 +227,7 @@ fi
 EOF
 chmod +x /usr/local/bin/newuser
 
+# === rmuser ===
 touch /usr/local/bin/rmuser
 cat << 'EOF' > /usr/local/bin/rmuser
 #!/bin/bash
@@ -255,6 +254,7 @@ echo "Client $selected_email removed."
 EOF
 chmod +x /usr/local/bin/rmuser
 
+# === sharelink ===
 touch /usr/local/bin/sharelink
 cat << 'EOF' > /usr/local/bin/sharelink
 #!/bin/bash
@@ -293,7 +293,7 @@ systemctl restart xray
 echo "Xray-core установлен (SNI: $selected_sni, Fingerprint: $fp, Port: $port)"
 mainuser
 
-# --- Help ---
+# === Help ===
 touch $HOME/help
 cat << 'EOF' > $HOME/help
 
@@ -317,6 +317,6 @@ Change SNI/fingerprint/port for bypass:
     nano /usr/local/etc/xray/config.json # (change dest/serverNames/fingerprint/port)
     systemctl restart xray
 
-!!! ВАЖНО: если не работает — пробуй другой SNI, fingerprint, порт, RU-локацию, и следи за актуальным списком "дырявых" доменов.
+!!! ВАЖНО: если не работает — пробуй другой SNI, fingerprint, порт, RU-локацию, и следи за списком рабочих доменов.
 
 EOF
