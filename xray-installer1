@@ -54,7 +54,6 @@ allowed_sni=(
   "login.vk.com"
   "ozone.ru"
   "storage.yandexcloud.net"
-  # ...добавь свои!
 )
 
 echo "========== SNI/DEST =========="
@@ -152,7 +151,8 @@ EOF
 
 systemctl restart xray
 
-# === userlist ===
+# Скрипты управления пользователями (userlist/mainuser/newuser/rmuser/sharelink) -- те же, как раньше
+
 touch /usr/local/bin/userlist
 cat << 'EOF' > /usr/local/bin/userlist
 #!/bin/bash
@@ -168,7 +168,6 @@ done
 EOF
 chmod +x /usr/local/bin/userlist
 
-# === mainuser ===
 touch /usr/local/bin/mainuser
 cat << 'EOF' > /usr/local/bin/mainuser
 #!/bin/bash
@@ -190,7 +189,6 @@ echo ${link} | qrencode -t ansiutf8
 EOF
 chmod +x /usr/local/bin/mainuser
 
-# === newuser ===
 touch /usr/local/bin/newuser
 cat << 'EOF' > /usr/local/bin/newuser
 #!/bin/bash
@@ -227,7 +225,6 @@ fi
 EOF
 chmod +x /usr/local/bin/newuser
 
-# === rmuser ===
 touch /usr/local/bin/rmuser
 cat << 'EOF' > /usr/local/bin/rmuser
 #!/bin/bash
@@ -254,7 +251,6 @@ echo "Client $selected_email removed."
 EOF
 chmod +x /usr/local/bin/rmuser
 
-# === sharelink ===
 touch /usr/local/bin/sharelink
 cat << 'EOF' > /usr/local/bin/sharelink
 #!/bin/bash
@@ -293,7 +289,6 @@ systemctl restart xray
 echo "Xray-core установлен (SNI: $selected_sni, Fingerprint: $fp, Port: $port)"
 mainuser
 
-# === Help ===
 touch $HOME/help
 cat << 'EOF' > $HOME/help
 
